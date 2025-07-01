@@ -1,5 +1,2 @@
 requests
 python-dotenv
-lxml            
-openai           
-pydantic     
