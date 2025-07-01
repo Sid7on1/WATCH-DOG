@@ -2,8 +2,8 @@ name: Weekly arXiv Paper Scanner
 
 on:
   schedule:
-    - cron: '0 2 * * 1'  # Runs every Monday at 2:00 AM UTC
-  workflow_dispatch:     # Allows manual triggering via GitHub UI
+    - cron: '0 2 * * 1'  # Every Monday at 2:00 AM UTC
+  workflow_dispatch:
 
 jobs:
   scan-papers:
@@ -11,7 +11,7 @@ jobs:
 
     steps:
       - name: 📥 Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: 🐍 Set up Python
         uses: actions/setup-python@v4
@@ -31,25 +31,25 @@ jobs:
         run: python v3.py
 
       - name: 📦 Upload PDFs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: downloaded-pdfs
           path: relevant_pdfs/
 
       - name: 📦 Upload JSONs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: parsed-json
           path: relevant_json/
 
       - name: 📦 Upload Raw Model Output
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: raw-model-output
           path: relevant_raw/
 
       - name: 📦 Upload Seen Titles Cache
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: seen-titles-log
           path: seen_titles.txt
