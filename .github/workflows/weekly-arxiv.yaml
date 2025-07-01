@@ -29,3 +29,27 @@ jobs:
 
       - name: 🚀 Run the Python script
         run: python v3.py  # ✅ FIXED: was `main.py`
+
+      - name: 📦 Upload PDFs
+        uses: actions/upload-artifact@v3
+        with:
+          name: downloaded-pdfs
+          path: relevant_pdfs/
+
+      - name: 📦 Upload JSONs
+        uses: actions/upload-artifact@v3
+        with:
+          name: parsed-json
+          path: relevant_json/
+
+      - name: 📦 Upload Raw Model Output
+        uses: actions/upload-artifact@v3
+        with:
+          name: raw-model-output
+          path: relevant_raw/
+
+      - name: 📦 Upload Seen Titles Cache
+        uses: actions/upload-artifact@v3
+        with:
+          name: seen-titles-log
+          path: seen_titles.txt
