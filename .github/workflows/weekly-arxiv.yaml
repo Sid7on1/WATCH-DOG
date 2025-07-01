@@ -28,4 +28,4 @@ jobs:
           echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" >> .env
 
       - name: 🚀 Run the Python script
-        run: python v3.py
+        run: python v3.py  # ✅ FIXED: was `main.py`
