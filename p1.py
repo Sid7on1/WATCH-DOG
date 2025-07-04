@@ -14,7 +14,7 @@ RELEVANT_JSON_DIR = "relevant_json"
 PUSH_LOG_FILE = "pushed_repos.txt"
 CREATED_REPOS_FILE = "created_repos.txt"
 
-if not GITHUB_USERNAME or not API_GITHUB:
+if not GITHUB_USERNAME or not GITHUB_TOKEN:
     raise ValueError("Missing GITHUB_USERNAME or GITHUB_TOKEN in .env")
 
 HEADERS = {
