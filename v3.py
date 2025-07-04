@@ -33,11 +33,11 @@ FALLBACK_MODEL = "google/gemini-2.0-flash-exp:free"
 
 # arXiv categories and keywords to search for.
 CATEGORIES = ["cs.AI", "cs.LG", "stat.ML"]
-KEYWORDS = ["agentic", "transformer architecture", "vision transformer", "slam"]
+KEYWORDS = ["agentic", "transformer architecture", "vision transformer", "Agents"]
 
 # Script behavior settings.
-MAX_RESULTS_PER_QUERY = 1
-DAYS_LIMIT = 7
+MAX_RESULTS_PER_QUERY = 3
+DAYS_LIMIT = 3
 DELAY_BETWEEN_REQUESTS = 25
 
 # Directory and file names for storing output.
