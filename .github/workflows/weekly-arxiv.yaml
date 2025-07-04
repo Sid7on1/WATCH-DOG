@@ -23,20 +23,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: ⚙️ Run dog_agent.py
-        run: python dog_agent.py
+      - name: ⚙️ Run v3.py
+        run: python v3.py
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
 
-      - name: 🧠 Run coder.py
-        run: python coder.py
+      - name: 🧠 Run c1.py
+        run: python c1.py
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
 
-      - name: 🚀 Run push.py
-        run: python push.py
+      - name: 🚀 Run p1.py
+        run: python p1.py
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
