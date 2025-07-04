@@ -29,10 +29,10 @@ jobs:
         run: echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" > .env
 
       - name: 🐶 Run Watchdog Agent (arXiv Fetch + Relevance Filter)
-        run: python watchdog.py
+        run: python v3.py
 
       - name: 🤖 Run Coder Agent (LLM Code Generation)
-        run: python coder.py
+        run: python c1.py
 
       - name: 📤 Commit & Push Updates
         run: |
