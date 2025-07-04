@@ -27,19 +27,19 @@ jobs:
         run: python v3.py
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
+          API_GITHUB: ${{ secrets.API_GITHUB }}
 
       - name: 🧠 Run c1.py
         run: python c1.py
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
+          API_GITHUB: ${{ secrets.API_GITHUB }}
 
       - name: 🚀 Run p1.py
         run: python p1.py
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
+          API_GITHUB: ${{ secrets.API_GITHUB }}
 
       - name: 📝 Commit and Push Changes
         run: |
