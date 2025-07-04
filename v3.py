@@ -14,7 +14,7 @@ import base64
 # Load environment variables from a .env file for secure key management.
 load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-GITHUB_TOKEN = os.getenv("API_GITHUB")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 # --- GITHUB CONFIG ---
 GITHUB_USER = "Sid7on1"
@@ -22,7 +22,7 @@ GITHUB_REPO = "WATCHDOG_memory"
 GITHUB_FILE_PATH = "seen_titles.txt"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents/{GITHUB_FILE_PATH}"
 GITHUB_HEADERS = {
-    "Authorization": f"token {API_GITHUB}",
+    "Authorization": f"token {GITHUB_TOKEN}",
     "Accept": "application/vnd.github.v3+json"
 }
 
