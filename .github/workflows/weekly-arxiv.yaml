@@ -1,43 +1,50 @@
-name: 📚 Paper-to-Code Agent Pipeline
+name: 🐶 Daily Watchdog AI Fetch & Push
 
 on:
   schedule:
-    - cron: "0 2 * * *"  # Every day at 2 AM UTC
-  workflow_dispatch:  # Allow manual trigger
+    - cron: '30 21 * * *'   # 3:00 AM IST == 21:30 UTC
+  workflow_dispatch:        # Manual trigger option
 
 jobs:
-  run-paper-to-code:
+  run-dog-scripts:
     runs-on: ubuntu-latest
-    env:
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
     steps:
       - name: 📥 Checkout Repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: 🐍 Setup Python 3.10
-        uses: actions/setup-python@v4
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: 📦 Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 🔐 Create .env File with API Key
-        run: echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" > .env
+      - name: ⚙️ Run dog_agent.py
+        run: python dog_agent.py
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
 
-      - name: 🐶 Run Watchdog Agent (arXiv Fetch + Relevance Filter)
-        run: python v3.py
+      - name: 🧠 Run coder.py
+        run: python coder.py
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
 
-      - name: 🤖 Run Coder Agent (LLM Code Generation)
-        run: python c1.py
+      - name: 🚀 Run push.py
+        run: python push.py
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
 
-      - name: 📤 Commit & Push Updates
+      - name: 📝 Commit and Push Changes
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add relevant_json/ relevant_pdfs/ workspace/ logs/
-          git commit -m "🧠 Daily pipeline: watchdog + coder agents update" || echo "No changes to commit"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "🤖 Auto-update papers and results at 3AM IST" || echo "Nothing to commit"
           git push
