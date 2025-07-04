@@ -14,7 +14,7 @@ import base64
 # Load environment variables from a .env file for secure key management.
 load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_TOKEN = os.getenv("TOKEN_GITHUB")
 
 # --- GITHUB CONFIG ---
 GITHUB_USER = "Sid7on1"
