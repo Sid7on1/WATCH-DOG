@@ -7,15 +7,16 @@ from dotenv import load_dotenv
 
 # === ENV SETUP ===
 load_dotenv()
-GITHUB_USERNAME = "Sid7on1"
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # not GITHUB_TOKEN
+GITHUB_USERNAME = os.getenv("USERNAME_GITHUB") or "Sid7on1"  # ✅ FIX: Use env if set, else fallback
+GITHUB_TOKEN = os.getenv("API_GITHUB")  # ✅ FIX: match what your GitHub Actions actually provides
+
 WORKSPACE_DIR = "workspace"
 RELEVANT_JSON_DIR = "relevant_json"
 PUSH_LOG_FILE = "pushed_repos.txt"
 CREATED_REPOS_FILE = "created_repos.txt"
 
-if not GITHUB_USERNAME or not API_GITHUB:
-    raise ValueError("Missing GITHUB_USERNAME or GITHUB_TOKEN in .env")
+if not GITHUB_USERNAME or not GITHUB_TOKEN:
+    raise ValueError("Missing USERNAME_GITHUB or API_GITHUB in .env or environment.")
 
 HEADERS = {
     "Authorization": f"Bearer {GITHUB_TOKEN}",
@@ -25,11 +26,9 @@ HEADERS = {
 # === UTILS ===
 
 def truncate_description(summary):
-    """Ensure GitHub repo description is <= 350 characters"""
     return (summary[:347] + "...") if len(summary) > 350 else summary
 
 def create_github_repo(repo_name, description):
-    """Create a GitHub repo using the GitHub API."""
     url = "https://api.github.com/user/repos"
     payload = {
         "name": repo_name,
@@ -37,7 +36,6 @@ def create_github_repo(repo_name, description):
         "private": False,
         "auto_init": False
     }
-
     response = requests.post(url, headers=HEADERS, json=payload)
     if response.status_code == 201:
         print(f"[✅ Created Repo] {repo_name}")
@@ -47,7 +45,6 @@ def create_github_repo(repo_name, description):
         return False
 
 def write_readme(project_path, title, summary):
-    """Write a basic README.md file."""
     readme_content = f"# {title}\n\n{summary.strip()}\n"
     readme_path = os.path.join(project_path, "README.md")
     with open(readme_path, "w", encoding="utf-8") as f:
@@ -55,7 +52,6 @@ def write_readme(project_path, title, summary):
     print("[📘 README Created]")
 
 def git_push_project(project_path, repo_name):
-    """Initialize Git repo, commit, and push code to GitHub."""
     os.chdir(project_path)
     subprocess.run(["git", "init"])
     subprocess.run(["git", "branch", "-M", "main"])
@@ -67,17 +63,15 @@ def git_push_project(project_path, repo_name):
     ])
     subprocess.run(["git", "push", "-u", "origin", "main"])
     print(f"[🚀 Pushed] {repo_name}")
-    os.chdir("../../")  # back to root
+    os.chdir("../../")
 
 def load_pushed_repo_cache():
-    """Returns a set of already-pushed repo names."""
     if not os.path.exists(PUSH_LOG_FILE):
         return set()
     with open(PUSH_LOG_FILE, "r", encoding="utf-8") as f:
         return {line.strip() for line in f if line.strip()}
 
 def update_push_log(repo_name):
-    """Appends a pushed repo name to the log."""
     with open(PUSH_LOG_FILE, "a", encoding="utf-8") as f:
         f.write(repo_name + "\n")
 
@@ -92,12 +86,10 @@ def add_to_created_repos(repo_name):
         f.write(repo_name + "\n")
 
 def main_py_valid(project_path):
-    """Checks if main.py exists and is non-empty."""
     main_py = os.path.join(project_path, "main.py")
     return os.path.exists(main_py) and os.path.getsize(main_py) > 10
 
 def load_projects():
-    """Load projects with summary from JSON or fallback to .txt raw file."""
     projects = []
 
     for project_name in os.listdir(WORKSPACE_DIR):
@@ -108,12 +100,10 @@ def load_projects():
 
         if not os.path.isdir(project_path):
             continue
-
         if not main_py_valid(project_path):
             print(f"[⚠️ Skipped] No valid main.py in {project_name}")
             continue
 
-        # Try loading JSON
         title = project_name
         summary = "Code generated from research paper. Summary unavailable."
 
@@ -125,21 +115,12 @@ def load_projects():
                     summary = data.get("summary_and_goal", summary)
             except Exception as e:
                 print(f"[⚠️ JSON Read Failed] {json_file}: {e}")
-                # Try raw txt fallback if JSON fails
                 if os.path.exists(raw_txt):
-                    try:
-                        with open(raw_txt, "r", encoding="utf-8") as f:
-                            raw_content = f.read()
-                            summary = raw_content.strip()[:1000]  # limit length
-                    except Exception as e:
-                        print(f"[⚠️ RAW TXT Read Failed] {raw_txt}: {e}")
+                    with open(raw_txt, "r", encoding="utf-8") as f:
+                        summary = f.read().strip()[:1000]
         elif os.path.exists(raw_txt):
-            try:
-                with open(raw_txt, "r", encoding="utf-8") as f:
-                    raw_content = f.read()
-                    summary = raw_content.strip()[:1000]  # limit length
-            except Exception as e:
-                print(f"[⚠️ RAW TXT Read Failed] {raw_txt}: {e}")
+            with open(raw_txt, "r", encoding="utf-8") as f:
+                summary = f.read().strip()[:1000]
         else:
             print(f"[⚠️ No Metadata] JSON and TXT missing for {project_name}, using defaults.")
 
@@ -148,10 +129,8 @@ def load_projects():
     return projects
 
 def clean_summary(summary):
-    """Clean summary for GitHub description: strip, replace newlines with spaces."""
     return summary.strip().replace('\n', ' ')
 
-# === MAIN ===
 def run():
     pushed_repos = load_pushed_repo_cache()
     created_repos = load_created_repos()
@@ -168,7 +147,6 @@ def run():
             continue
 
         description = clean_summary(summary)
-        # --- Robust repo creation with error handling ---
         url = "https://api.github.com/user/repos"
         payload = {
             "name": repo_name,
@@ -192,10 +170,10 @@ def run():
                 if name_error:
                     print(f"[⚠️ Already Exists] {project_name} — marking as created.")
                     add_to_created_repos(project_name)
-                    continue  # skip further processing
+                    continue
             print(f"[❌ Repo Create Failed] {project_name}: {error_json}")
             continue
-        # --- End repo creation ---
+
         write_readme(project_path, title, summary)
         git_push_project(project_path, repo_name)
         update_push_log(project_name)
