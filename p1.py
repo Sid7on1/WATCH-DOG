@@ -14,11 +14,11 @@ RELEVANT_JSON_DIR = "relevant_json"
 PUSH_LOG_FILE = "pushed_repos.txt"
 CREATED_REPOS_FILE = "created_repos.txt"
 
-if not GITHUB_USERNAME or not GITHUB_TOKEN:
-    raise ValueError("Missing GITHUB_USERNAME or GITHUB_TOKEN in .env")
+if not GITHUB_USERNAME or not API_GITHUB:
+    raise ValueError("Missing GITHUB_USERNAME or API_GITHUB in .env")
 
 HEADERS = {
-    "Authorization": f"Bearer {GITHUB_TOKEN}",
+    "Authorization": f"Bearer {API_GITHUB}",
     "Accept": "application/vnd.github+json"
 }
 
@@ -63,7 +63,7 @@ def git_push_project(project_path, repo_name):
     subprocess.run(["git", "commit", "-m", "Initial commit from coder agent"])
     subprocess.run([
         "git", "remote", "add", "origin",
-        f"https://{GITHUB_USERNAME}:{GITHUB_TOKEN}@github.com/{GITHUB_USERNAME}/{repo_name}.git"
+        f"https://{GITHUB_USERNAME}:{API_GITHUB}@github.com/{GITHUB_USERNAME}/{repo_name}.git"
     ])
     subprocess.run(["git", "push", "-u", "origin", "main"])
     print(f"[🚀 Pushed] {repo_name}")
