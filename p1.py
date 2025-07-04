@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 # === ENV SETUP ===
 load_dotenv()
 GITHUB_USERNAME = os.getenv("USERNAME_GITHUB") or "Sid7on1"  # ✅ FIX: Use env if set, else fallback
-GITHUB_TOKEN = os.getenv("API_GITHUB")  # ✅ FIX: match what your GitHub Actions actually provides
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # ✅ FIX: match what your GitHub Actions actually provides
 
 WORKSPACE_DIR = "workspace"
 RELEVANT_JSON_DIR = "relevant_json"
