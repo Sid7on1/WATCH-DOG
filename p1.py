@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 # === ENV SETUP ===
 load_dotenv()
-GITHUB_USERNAME = os.getenv("USERNAME_GITHUB")
+GITHUB_USERNAME = os.getenv("API_GITHUB")
 GITHUB_TOKEN = os.getenv("TOKEN_GITHUB")
 WORKSPACE_DIR = "workspace"
 RELEVANT_JSON_DIR = "relevant_json"
