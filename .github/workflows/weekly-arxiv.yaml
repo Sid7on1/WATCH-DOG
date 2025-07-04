@@ -1,53 +1,59 @@
 name: 🐶 Daily Watchdog AI Fetch & Push
-
 on:
   schedule:
     - cron: '30 21 * * *'   # 3:00 AM IST == 21:30 UTC
   workflow_dispatch:        # Manual trigger option
-
 jobs:
   run-dog-scripts:
     runs-on: ubuntu-latest
-
     steps:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
-
+      
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
+      
       - name: 📦 Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
+      
+      # Debug step to check environment variables
+      - name: 🔍 Debug Environment Variables
+        run: |
+          echo "Checking environment variables..."
+          echo "API_GITHUB exists: ${{ secrets.API_GITHUB != '' }}"
+          echo "GITHUB_TOKEN will be: ${GITHUB_TOKEN:0:10}..."
+        env:
+          GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
+      
       - name: ⚙️ Run v3.py
         run: python v3.py
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
-
+      
       - name: 🧠 Run c1.py
         run: python c1.py
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
-
+      
       - name: 🚀 Run p1.py
         run: python p1.py
         env:
           GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
           USERNAME_GITHUB: "Sid7on1"
-
+      
       - name: 📝 Commit and Push Changes
         env:
           GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://x-access-token:$GITHUB_TOKEN@github.com/Sid7on1/WATCH-DOG.git
+          git remote set-url origin https://x-access-token:${{ secrets.API_GITHUB }}@github.com/Sid7on1/WATCH-DOG.git
           git add .
           git commit -m "🤖 Auto-update papers and results at 3AM IST" || echo "Nothing to commit"
           git push origin main
