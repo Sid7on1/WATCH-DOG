@@ -46,14 +46,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
           USERNAME_GITHUB: "Sid7on1"
-      
-      - name: 📝 Commit and Push Changes
-        env:
-          GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://x-access-token:${{ secrets.API_GITHUB }}@github.com/Sid7on1/WATCHDOG_memory.git
-          git add .
-          git commit -m "🤖 Auto-update papers and results at 3AM IST" || echo "Nothing to commit"
-          git push origin main
