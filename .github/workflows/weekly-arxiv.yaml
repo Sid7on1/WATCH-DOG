@@ -38,9 +38,9 @@ jobs:
       - name: 🚀 Run p1.py
         run: python p1.py
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          API_GITHUB: ${{ secrets.API_GITHUB }}
-
+            API_GITHUB: ${{ secrets.API_GITHUB }}
+            USERNAME_GITHUB: "Sid7on1"
+  
       - name: 📝 Commit and Push Changes
         run: |
           git config user.name "github-actions[bot]"
