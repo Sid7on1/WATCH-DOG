@@ -36,9 +36,9 @@ CATEGORIES = ["cs.AI", "cs.LG", "stat.ML"]
 KEYWORDS = ["agentic", "transformer architecture", "vision transformer", "Agents"]
 
 # Script behavior settings.
-MAX_RESULTS_PER_QUERY = 3
+MAX_RESULTS_PER_QUERY = 5
 DAYS_LIMIT = 3
-DELAY_BETWEEN_REQUESTS = 25
+DELAY_BETWEEN_REQUESTS = 30
 
 # Directory and file names for storing output.
 PDF_DIR = "relevant_pdfs"
