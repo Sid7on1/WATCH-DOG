@@ -92,10 +92,29 @@ def add_to_created_repos(repo_name):
         f.write(repo_name + "\n")
 
 def main_py_valid(project_path):
-    """Checks if main.py exists and is non-empty."""
+    """Checks if main.py exists and is meaningfully non-empty."""
     main_py = os.path.join(project_path, "main.py")
-    return os.path.exists(main_py) and os.path.getsize(main_py) > 10
+    
+    if not os.path.exists(main_py):
+        print(f"[❌ main.py MISSING] → {main_py}")
+        return False
 
+    size = os.path.getsize(main_py)
+    if size < 10:
+        print(f"[⚠️ main.py Too Small: {size} bytes] → {main_py}")
+        return False
+
+    # Optional: Read content and check for useful code
+    with open(main_py, "r", encoding="utf-8") as f:
+        content = f.read().strip()
+        if not content or len(content) < 10:
+            print(f"[⚠️ main.py Seems Empty or Only Comments] → {main_py}")
+            return False
+        if all(line.strip().startswith("#") for line in content.splitlines()):
+            print(f"[⚠️ main.py Only Comments] → {main_py}")
+            return False
+
+    return True
 def load_projects():
     """Load projects with summary from JSON or fallback to .txt raw file."""
     projects = []
