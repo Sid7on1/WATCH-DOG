@@ -43,7 +43,7 @@ KEYWORDS = ["agentic", "transformer architecture", "vision transformer", "Agents
 # Script behavior settings.
 TARGET_PAPERS_PER_DOMAIN = 2  # Number of unseen papers to fetch per domain
 MAX_SEARCH_ATTEMPTS = 50  # Maximum papers to check per domain to find unseen ones
-DAYS_LIMIT = 3
+DAYS_LIMIT = 30
 DELAY_BETWEEN_REQUESTS = 30
 
 # Directory and file names for storing output.
