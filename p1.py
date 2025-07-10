@@ -46,26 +46,30 @@ def create_github_repo(repo_name, description):
         print(f"[❌ Repo Create Failed] {repo_name}: {response.text}")
         return False
 
-def write_readme(project_path, title, summary):
-    """Write a basic README.md file."""
-    readme_content = f"# {title}\n\n{summary.strip()}\n"
-    readme_path = os.path.join(project_path, "README.md")
-    with open(readme_path, "w", encoding="utf-8") as f:
-        f.write(readme_content)
-    print("[📘 README Created]")
-
 def git_push_project(project_path, repo_name):
-    """Initialize Git repo, commit, and push code to GitHub."""
+    """Initialize Git repo (if needed), commit, and push code to GitHub."""
     os.chdir(project_path)
-    subprocess.run(["git", "init"])
-    subprocess.run(["git", "branch", "-M", "main"])
-    subprocess.run(["git", "add", "."])
-    subprocess.run(["git", "commit", "-m", "Initial commit from coder agent"])
-    subprocess.run([
-        "git", "remote", "add", "origin",
-        f"https://{GITHUB_USERNAME}:{GITHUB_TOKEN}@github.com/{GITHUB_USERNAME}/{repo_name}.git"
-    ])
-    subprocess.run(["git", "push", "-u", "origin", "main"])
+
+    # Only init git if not already a git repo
+    if not os.path.exists(os.path.join(project_path, ".git")):
+        subprocess.run(["git", "init"], check=True)
+        subprocess.run(["git", "branch", "-M", "main"], check=True)
+        subprocess.run([
+            "git", "remote", "add", "origin",
+            f"https://{GITHUB_USERNAME}:{GITHUB_TOKEN}@github.com/{GITHUB_USERNAME}/{repo_name}.git"
+        ], check=True)
+    else:
+        # Ensure remote origin is correctly set
+        subprocess.run([
+            "git", "remote", "set-url", "origin",
+            f"https://{GITHUB_USERNAME}:{GITHUB_TOKEN}@github.com/{GITHUB_USERNAME}/{repo_name}.git"
+        ], check=True)
+
+    # Stage, commit, and push
+    subprocess.run(["git", "add", "."], check=True)
+    subprocess.run(["git", "commit", "-m", "Initial commit from Coder Agent", "--allow-empty"], check=True)
+    subprocess.run(["git", "push", "-u", "origin", "main"], check=True)
+
     print(f"[🚀 Pushed] {repo_name}")
     os.chdir("../../")  # back to root
 
@@ -215,7 +219,6 @@ def run():
             print(f"[❌ Repo Create Failed] {project_name}: {error_json}")
             continue
         # --- End repo creation ---
-        write_readme(project_path, title, summary)
         git_push_project(project_path, repo_name)
         update_push_log(project_name)
         print("[⏳ Delay] Waiting 25 seconds before next push...")
