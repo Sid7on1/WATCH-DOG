@@ -1122,6 +1122,7 @@ class M1MaintainerAgent:
         all_deps = sorted(list(set(dependencies)))
         deps_toml = "\n".join([f'    {dep.split("==")[0].strip()} = "*"' for dep in all_deps])
 
+        dev_deps_str = '\n'.join(default_dev_deps)
         tool_poetry_toml = f"""
 [tool.poetry]
 name = "{self._sanitize_repo_name_for_poetry(title)}"
@@ -1136,7 +1137,7 @@ python = ">=3.9,<3.13"
 {deps_toml}
 
 [tool.poetry.group.dev.dependencies]
-{'\n'.join(default_dev_deps)}
+{dev_deps_str}
 
 [build-system]
 requires = ["poetry-core"]
