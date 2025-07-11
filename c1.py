@@ -1908,9 +1908,18 @@ if __name__ == "__main__":
 
                 # 10. Pull Request Automation
                 if self.config.create_dev_branch and target_branch != "main":
-                    pr_title = f"feat({repo_name}): Automated implementation of {paper_info.title}"
-                    pr_body = f"This PR contains the automated implementation of the research paper '{paper_info.title}'.\n\n**Summary:** {paper_info.summary}\n\n**Automated Checks:**\n- Code Quality Score: {result.code_quality_score:.1f}/100\n- Tests Passed: {result.tests_passed}\n- Refinements Applied: {result.code_refinements_applied}\n\n{'' if not result.errors else '**Errors Encountered:**\n' + '\\n'.join(result.errors)}\n{'' if not result.warnings else '**Warnings:**\n' + '\\n'.join(result.warnings)}"
-                    pr_url = await self.github_integrator.create_pull_request(repo_name, target_branch, "main", pr_title, pr_body)
+                    errors_str = '' if not result.errors else '**Errors Encountered:**\n' + '\n'.join(result.errors)
+                    warnings_str = '' if not result.warnings else '**Warnings:**\n' + '\n'.join(result.warnings)
+                    pr_body = (
+                        f"This PR contains the automated implementation of the research paper '{paper_info.title}'.\n\n"
+                        f"**Summary:** {paper_info.summary}\n\n"
+                        f"**Automated Checks:**\n"
+                        f"- Code Quality Score: {result.code_quality_score:.1f}/100\n"
+                        f"- Tests Passed: {result.tests_passed}\n"
+                        f"- Refinements Applied: {result.code_refinements_applied}\n\n"
+                        f"{errors_str}\n{warnings_str}"
+                    )
+                    pr_url = await self.github_integrator.create_pull_request(repo_name, target_branch, "main", f"feat({repo_name}): Automated implementation of {paper_info.title}", pr_body)
                     if pr_url:
                         result.pr_created = True
                         self.logger.info(f"Pull Request created: {pr_url}")
