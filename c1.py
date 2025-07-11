@@ -1007,12 +1007,26 @@ class M1MaintainerAgent:
         return logger
 
     def _setup_directories(self):
-        """Ensures all necessary directories exist."""
+        """Ensures all necessary directories exist and syncs DOG output if needed."""
         self.config.relevant_papers_dir.mkdir(parents=True, exist_ok=True)
         self.config.workspace_dir.mkdir(parents=True, exist_ok=True)
         self.config.logs_dir.mkdir(parents=True, exist_ok=True)
         self.config.llm_logs_dir.mkdir(parents=True, exist_ok=True)
         self.config.temp_dir.mkdir(parents=True, exist_ok=True)
+        self._sync_relevant_json_to_papers()
+
+    def _sync_relevant_json_to_papers(self):
+        """If relevant_papers_dir is empty, copy all JSONs from relevant_json/."""
+        src_dir = self.config.base_dir / "relevant_json"
+        dst_dir = self.config.relevant_papers_dir
+        if not any(dst_dir.glob("*.json")) and src_dir.exists():
+            json_files = list(src_dir.glob("*.json"))
+            if json_files:
+                self.logger.info(f"Copying {len(json_files)} files from {src_dir} to {dst_dir}")
+                for f in json_files:
+                    shutil.copy(f, dst_dir)
+            else:
+                self.logger.warning(f"No JSON files found in {src_dir} to copy.")
 
     async def __aenter__(self):
         """Initializes async resources and sub-components."""
