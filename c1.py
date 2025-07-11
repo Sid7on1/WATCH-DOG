@@ -1678,7 +1678,7 @@ def load_config() -> Config:
     required_env_vars = [
         'OPENROUTER_API_KEY',
         'GITHUB_TOKEN',
-        'GITHUB_USERNAME'
+        'USERNAME_GITHUB'
     ]
     
     missing_vars = [var for var in required_env_vars if not os.getenv(var)]
@@ -1688,7 +1688,7 @@ def load_config() -> Config:
     return Config(
         openrouter_api_key=os.getenv('OPENROUTER_API_KEY'),
         github_token=os.getenv('GITHUB_TOKEN'),
-        github_username=os.getenv('GITHUB_USERNAME'),
+        github_username=os.getenv('USERNAME_GITHUB'),
         primary_model=os.getenv('PRIMARY_MODEL', "deepseek/deepseek-r1-0528-qwen3-8b:free"),
         fallback_model=os.getenv('FALLBACK_MODEL', "google/gemini-2.0-flash-exp:free"),
         backup_model=os.getenv('BACKUP_MODEL', "meta-llama/llama-3.1-8b-instruct:free"),
