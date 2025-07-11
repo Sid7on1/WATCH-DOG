@@ -40,6 +40,7 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
+          USERNAME_GITHUB: "Sid7on1"
       
       - name: 🚀 Run p1.py
         run: python p1.py
