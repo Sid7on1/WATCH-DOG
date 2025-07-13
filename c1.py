@@ -65,6 +65,7 @@ class Config:
 # --- Enums and Data Classes (Reused and Extended) ---
 class ProcessingStatus(Enum):
     PENDING = "pending"
+    PROCESSING = "processing"
     FETCHING = "fetching"
     GENERATING_CODE = "generating_code"
     REFINING_CODE = "refining_code"
