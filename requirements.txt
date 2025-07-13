@@ -3,3 +3,8 @@ python-dotenv
 openai
 aiohttp
 asyncio
+poetry
+pytest
+flake8
+black
+docker
