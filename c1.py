@@ -40,7 +40,7 @@ class Config:
 
     # Paths
     base_dir: Path = Path(__file__).parent
-    papers_dir: Path = base_dir / "relevant_json"
+    papers_dir: Path = base_dir / "papers_to_implement"
     state_file: Path = base_dir / "managed_repos_state.json"
     workspace_dir: Path = base_dir / "workspace"
     logs_dir: Path = base_dir / "logs"
