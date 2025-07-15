@@ -34,7 +34,7 @@ class Config:
     repo_visibility: str = "public"
     max_concurrent_papers: int = 3
     base_dir: Path = Path(__file__).parent
-    papers_dir: Path = base_dir / "papers_to_implement"
+    papers_dir: Path = base_dir / "relevant_json"
     state_file: Path = base_dir / "managed_repos_state.json"
     workspace_dir: Path = base_dir / "workspace"
     logs_dir: Path = base_dir / "logs"
