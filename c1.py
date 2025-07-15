@@ -22,23 +22,17 @@ class Config:
     openrouter_api_key: str
     github_token: str
     github_username: str
-
-    # LLM Settings
+    user_agent: str = "M1-Evo-Agent/2.0"
+    repo_prefix: str = "paper-impl-"
     architect_model: str = "meta-llama/llama-3.1-405b-instruct"
     coder_model: str = "deepseek/deepseek-coder-v2"
     temperature: float = 0.5
     max_llm_tokens: int = 8000
-
-    # Processing & Concurrency
     request_timeout: int = 400
     retry_attempts: int = 3
     retry_delay: int = 10
-
-    # GitHub Repository Settings
-    repo_prefix: str = "paper-impl-"
     repo_visibility: str = "public"
-
-    # Paths
+    max_concurrent_papers: int = 3
     base_dir: Path = Path(__file__).parent
     papers_dir: Path = base_dir / "papers_to_implement"
     state_file: Path = base_dir / "managed_repos_state.json"
@@ -93,12 +87,20 @@ class LLMInterface:
         self.headers = {
             "Authorization": f"Bearer {self.config.openrouter_api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "M1-Evo-Agent/2.0"
+            "User-Agent": self.config.user_agent
         }
         self.config.llm_logs_dir.mkdir(exist_ok=True)
 
+    def redact_sensitive(self, data: Any) -> Any:
+        """Redacts sensitive information like API keys from logs."""
+        if isinstance(data, dict):
+            return {k: "[REDACTED]" if k.lower() in ["authorization", "token"] else self.redact_sensitive(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self.redact_sensitive(item) for item in data]
+        return data
+
     async def _call_llm(self, messages: List[Dict[str, str]], model: str, is_json: bool = False) -> Tuple[Optional[str], Optional[str]]:
-        """Internal method to call the LLM API with retry logic."""
+        """Calls the LLM API with retry logic and rate-limiting handling."""
         url = "https://openrouter.ai/api/v1/chat/completions"
         payload = {
             "model": model,
@@ -113,17 +115,22 @@ class LLMInterface:
         for attempt in range(self.config.retry_attempts):
             try:
                 async with self.session.post(url, headers=self.headers, json=payload, timeout=self.config.request_timeout) as response:
+                    if response.status == 429:
+                        retry_after = int(response.headers.get("Retry-After", 60))
+                        self.logger.warning(f"Rate limit exceeded for LLM API. Retrying after {retry_after} seconds.")
+                        await asyncio.sleep(retry_after)
+                        continue
                     response.raise_for_status()
                     data = await response.json()
                     response_content = data['choices'][0]['message']['content']
                     
-                    # Log interaction
+                    # Log interaction with redacted sensitive data
                     log_file = self.config.llm_logs_dir / f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{model.replace('/', '_')}.json"
                     with open(log_file, 'w', encoding='utf-8') as f:
-                        json.dump({"request": payload, "response": data}, f, indent=2)
+                        json.dump(self.redact_sensitive({"request": payload, "response": data}), f, indent=2)
 
                     return response_content, None
-            except Exception as e:
+            except aiohttp.ClientResponseError as e:
                 error_message = f"LLM API call failed (Attempt {attempt+1}/{self.config.retry_attempts}) for model {model}: {e}"
                 self.logger.warning(error_message)
                 if attempt < self.config.retry_attempts - 1:
@@ -164,7 +171,7 @@ class LLMInterface:
         }}
         """
         messages = [{"role": "user", "content": prompt}]
-        self.logger.info(f"Requesting file plan from architect model: {self.config.architect_model}")
+        self.logger.info(f"Requesting file plan for '{paper.title}' from architect model: {self.config.architect_model}")
         
         content, error = await self._call_llm(messages, self.config.architect_model, is_json=True)
         if error:
@@ -172,9 +179,12 @@ class LLMInterface:
 
         try:
             data = json.loads(content)
+            if not isinstance(data, dict) or "files" not in data or not isinstance(data["files"], list):
+                return None, "Invalid response structure from architect LLM."
             plan = [FilePlan(**item) for item in data.get("files", [])]
             if not plan:
-                return None, "Architect model returned an empty or invalid file plan."
+                self.logger.warning("Architect model returned an empty file plan. Using default minimal structure.")
+                plan = [FilePlan(path="README.md", description="Basic project documentation.")]
             return plan, "File plan generated successfully."
         except (json.JSONDecodeError, TypeError) as e:
             self.logger.error(f"Failed to parse file plan from LLM response: {e}\nResponse: {content}")
@@ -209,11 +219,13 @@ class LLMInterface:
         messages = [{"role": "user", "content": prompt}]
         self.logger.info(f"Requesting content for '{file_plan.path}' from coder model: {self.config.coder_model}")
         
-        content, error = await self._call_llm(messages, self.config.coder_model)
-        if error:
-            return None, error
-        
-        return content, "File content generated successfully."
+        for attempt in range(self.config.retry_attempts):
+            content, error = await self._call_llm(messages, self.config.coder_model)
+            if content:
+                return content, "File content generated successfully."
+            self.logger.warning(f"Retry {attempt+1}/{self.config.retry_attempts} for {file_plan.path}: {error}")
+            await asyncio.sleep(self.config.retry_delay)
+        return None, f"Failed to generate {file_plan.path} after {self.config.retry_attempts} attempts."
 
 class GitHubIntegrator:
     """Manages all GitHub API interactions."""
@@ -224,11 +236,24 @@ class GitHubIntegrator:
         self.headers = {
             "Authorization": f"token {self.config.github_token}",
             "Accept": "application/vnd.github.v3+json",
+            "User-Agent": self.config.user_agent
         }
+
+    async def validate_token(self):
+        """Validates the GitHub token by fetching user information."""
+        url = "https://api.github.com/user"
+        try:
+            async with self.session.get(url, headers=self.headers) as response:
+                response.raise_for_status()
+                data = await response.json()
+                if data.get("login") != self.config.github_username:
+                    raise ValueError("GitHub token does not match provided username.")
+        except Exception as e:
+            self.logger.critical(f"Invalid GitHub token: {e}")
+            raise
 
     async def create_repository(self, repo_name: str, description: str) -> Tuple[Optional[str], Optional[str]]:
         """Creates a new GitHub repository and returns its HTML and clone URLs."""
-        # Check if repo exists first
         check_url = f"https://api.github.com/repos/{self.config.github_username}/{repo_name}"
         async with self.session.get(check_url, headers=self.headers) as response:
             if response.status == 200:
@@ -236,32 +261,38 @@ class GitHubIntegrator:
                 data = await response.json()
                 return data.get("html_url"), data.get("clone_url")
 
-        # Create new repo if it doesn't exist
         create_url = "https://api.github.com/user/repos"
         payload = {
             "name": repo_name,
             "description": description,
             "private": self.config.repo_visibility != "public",
-            "auto_init": False # We will initialize it locally
+            "auto_init": False
         }
         async with self.session.post(create_url, headers=self.headers, json=payload) as response:
+            if response.status == 429:
+                retry_after = int(response.headers.get("Retry-After", 60))
+                self.logger.warning(f"Rate limit exceeded for GitHub API. Retrying after {retry_after} seconds.")
+                await asyncio.sleep(retry_after)
+                return await self.create_repository(repo_name, description)
             if response.status == 201:
                 data = await response.json()
                 self.logger.info(f"Successfully created GitHub repository: {data['html_url']}")
                 return data.get("html_url"), data.get("clone_url")
-            else:
-                error_text = await response.text()
-                self.logger.error(f"Failed to create repo {repo_name}: {response.status} - {error_text}")
-                return None, None
+            error_text = await response.text()
+            self.logger.error(f"Failed to create repo {repo_name}: {response.status} - {error_text}")
+            return None, None
 
 class RepoManager:
     """Manages all local Git operations."""
     def __init__(self, config: Config, logger: logging.Logger):
         self.config = config
         self.logger = logger
+        if not shutil.which("git"):
+            self.logger.critical("Git is not installed or not found in PATH.")
+            raise EnvironmentError("Git is required but not found.")
 
     def _run_command(self, command: List[str], cwd: Path, env: Optional[Dict] = None) -> Tuple[bool, str]:
-        """Helper to run shell commands."""
+        """Runs a shell command and returns success status and output."""
         try:
             process = subprocess.run(
                 command,
@@ -291,21 +322,22 @@ class RepoManager:
         if not local_path.exists():
             local_path.mkdir(parents=True)
 
-        # Use a token-authenticated URL for all operations
-        auth_url = remote_url.replace("https://", f"https://{self.config.github_username}:{self.config.github_token}@")
-        
+        env = os.environ.copy()
+        env["GIT_ASKPASS"] = "echo"  # GitHub Actions handles token via environment
+        env["GITHUB_TOKEN"] = self.config.github_token
+
         commands = [
             ["git", "init"],
             ["git", "config", "user.name", self.config.github_username],
             ["git", "config", "user.email", f"{self.config.github_username}@users.noreply.github.com"],
             ["git", "branch", "-M", "main"],
-            ["git", "remote", "add", "origin", auth_url],
+            ["git", "remote", "add", "origin", remote_url],
             ["git", "commit", "--allow-empty", "-m", "chore: Initial commit"],
             ["git", "push", "-u", "origin", "main"]
         ]
 
         for cmd in commands:
-            success, msg = self._run_command(cmd, cwd=local_path)
+            success, msg = self._run_command(cmd, cwd=local_path, env=env)
             if not success:
                 self.logger.error(f"Failed to initialize repository at step `{' '.join(cmd)}`: {msg}")
                 return False
@@ -313,26 +345,42 @@ class RepoManager:
         self.logger.info(f"Successfully initialized and pushed empty repo to {remote_url}")
         return True
 
-    def add_commit_and_push_file(self, local_path: Path, file_path: str) -> bool:
-        """Adds a single file, commits, and pushes to the main branch."""
-        full_file_path = local_path / file_path
-        if not full_file_path.exists():
-            self.logger.error(f"Cannot commit non-existent file: {full_file_path}")
-            return False
-            
+    def commit_and_push_files(self, local_path: Path, file_paths: List[str]) -> bool:
+        """Commits and pushes multiple files in a single commit."""
+        if not file_paths:
+            self.logger.warning("No files to commit.")
+            return True
         commands = [
-            ["git", "add", str(full_file_path)],
-            ["git", "commit", "-m", f"feat: Create {file_path}"],
+            ["git", "add"] + file_paths,
+            ["git", "commit", "-m", f"feat: Add generated files for paper implementation"],
             ["git", "push", "origin", "main"]
         ]
         
+        env = os.environ.copy()
+        env["GIT_ASKPASS"] = "echo"
+        env["GITHUB_TOKEN"] = self.config.github_token
+
         for cmd in commands:
-            success, msg = self._run_command(cmd, cwd=local_path)
+            success, msg = self._run_command(cmd, cwd=local_path, env=env)
             if not success:
-                self.logger.error(f"Failed to push file '{file_path}' at step `{' '.join(cmd)}`: {msg}")
+                self.logger.error(f"Failed to push files at step `{' '.join(cmd)}`: {msg}")
                 return False
         
-        self.logger.info(f"Successfully committed and pushed '{file_path}'")
+        self.logger.info(f"Successfully committed and pushed {len(file_paths)} files.")
+        return True
+
+    def validate_repository(self, local_path: Path) -> bool:
+        """Validates the repository by running basic linting and tests."""
+        self.logger.info(f"Validating repository at {local_path}")
+        commands = [
+            ["flake8", "."] if (local_path / "flake8").exists() else None,
+            ["pytest", "tests"] if (local_path / "tests").exists() else None
+        ]
+        for cmd in [c for c in commands if c]:
+            success, msg = self._run_command(cmd, cwd=local_path)
+            if not success:
+                self.logger.error(f"Validation failed for {cmd[0]}: {msg}")
+                return False
         return True
 
 class StateManager:
@@ -343,6 +391,7 @@ class StateManager:
         self.managed_repos: Dict[str, RepoState] = {}
 
     def load_state(self):
+        """Loads the state from the state file."""
         if not self.config.state_file.exists():
             self.logger.info("No state file found, starting fresh.")
             return
@@ -358,19 +407,18 @@ class StateManager:
             self.managed_repos = {}
 
     def save_state(self):
+        """Saves the state atomically to the state file."""
         try:
-            serializable_data = {}
-            for name, state in self.managed_repos.items():
-                state_dict = asdict(state)
-                state_dict['status'] = state_dict['status'].value
-                serializable_data[name] = state_dict
-            
-            with open(self.config.state_file, 'w', encoding='utf-8') as f:
+            temp_file = self.config.state_file.with_suffix(".tmp")
+            serializable_data = {name: {**asdict(state), "status": state.status.value} for name, state in self.managed_repos.items()}
+            with open(temp_file, 'w', encoding='utf-8') as f:
                 json.dump(serializable_data, f, indent=2)
+            temp_file.rename(self.config.state_file)
         except Exception as e:
             self.logger.error(f"Failed to save state: {e}")
 
     def update_repo_state(self, repo_state: RepoState):
+        """Updates the state for a repository and saves it."""
         repo_state.last_processed_timestamp = datetime.now().isoformat()
         self.managed_repos[repo_state.repo_name] = repo_state
         self.save_state()
@@ -382,7 +430,6 @@ class M1EvoAgent:
         self.config = config
         self.logger = self._setup_logging()
         self._setup_directories()
-        
         self.session: Optional[aiohttp.ClientSession] = None
         self.llm: Optional[LLMInterface] = None
         self.github: Optional[GitHubIntegrator] = None
@@ -390,20 +437,18 @@ class M1EvoAgent:
         self.state_manager: Optional[StateManager] = None
 
     def _setup_logging(self) -> logging.Logger:
+        """Sets up logging with configurable verbosity."""
         self.config.logs_dir.mkdir(exist_ok=True)
         log_file = self.config.logs_dir / 'm1_evo_agent.log'
+        log_level = os.getenv("LOG_LEVEL", "INFO").upper()
         
         logger = logging.getLogger("M1EvoAgent")
-        logger.setLevel(logging.INFO)
+        logger.setLevel(getattr(logging, log_level, logging.INFO))
         
-        # Prevent adding handlers multiple times
         if not logger.handlers:
-            # File handler
             fh = logging.FileHandler(log_file)
             fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
             logger.addHandler(fh)
-            
-            # Console handler
             ch = logging.StreamHandler()
             ch.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
             logger.addHandler(ch)
@@ -411,8 +456,15 @@ class M1EvoAgent:
         return logger
 
     def _setup_directories(self):
-        self.config.papers_dir.mkdir(exist_ok=True)
-        self.config.workspace_dir.mkdir(exist_ok=True)
+        """Sets up required directories with permission checks."""
+        for directory in [self.config.papers_dir, self.config.workspace_dir, self.config.logs_dir, self.config.llm_logs_dir]:
+            try:
+                directory.mkdir(exist_ok=True)
+                if not os.access(directory, os.W_OK):
+                    raise PermissionError(f"No write permissions for {directory}")
+            except PermissionError as e:
+                self.logger.critical(f"Permission error for directory {directory}: {e}")
+                raise
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -420,6 +472,7 @@ class M1EvoAgent:
         self.github = GitHubIntegrator(self.config, self.session, self.logger)
         self.repo_manager = RepoManager(self.config, self.logger)
         self.state_manager = StateManager(self.config, self.logger)
+        await self.github.validate_token()
         self.state_manager.load_state()
         return self
 
@@ -437,35 +490,58 @@ class M1EvoAgent:
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                if not isinstance(data, dict):
+                    self.logger.error(f"Invalid JSON structure in {file_path}: Expected a dictionary.")
+                    continue
                 paper_id = data.get("id", hashlib.md5(file_path.read_bytes()).hexdigest())
+                title = data.get("title")
+                if not title:
+                    self.logger.error(f"Missing 'title' in {file_path}.")
+                    continue
                 papers.append(PaperInfo(
                     id=paper_id,
-                    title=data.get("title", file_path.stem),
+                    title=title,
                     summary=data.get("summary", "No summary provided."),
                     source_path=file_path,
                     last_modified=file_path.stat().st_mtime
                 ))
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Invalid JSON in {file_path}: {e}")
             except Exception as e:
                 self.logger.error(f"Could not process paper file {file_path}: {e}")
         return papers
 
-    def _generate_repo_name(self, paper_title: str) -> str:
+    def _generate_repo_name(self, paper_title: str, paper_id: str) -> str:
         """Generates a sanitized repository name."""
         name = re.sub(r'[^a-zA-Z0-9\s-]', '', paper_title).lower()
         name = re.sub(r'\s+', '-', name).strip('-')
-        return (self.config.repo_prefix + name)[:100]
+        max_len = 100 - len(self.config.repo_prefix) - len(paper_id) - 1
+        name = name[:max_len] + f"-{paper_id[:8]}"
+        return self.config.repo_prefix + name
+
+    def sanitize_path(self, path: str, base_path: Path) -> Path:
+        """Sanitizes file paths to prevent directory traversal."""
+        normalized = (base_path / path).resolve()
+        if not normalized.is_relative_to(base_path.resolve()):
+            raise ValueError(f"Invalid file path: {path} attempts to escape repository root.")
+        return normalized
 
     async def process_paper(self, paper: PaperInfo):
         """Main processing pipeline for a single paper."""
-        repo_name = self._generate_repo_name(paper.title)
+        repo_name = self._generate_repo_name(paper.title, paper.id)
         local_repo_path = self.config.workspace_dir / repo_name
-        
         repo_state = self.state_manager.managed_repos.get(repo_name, RepoState(repo_name=repo_name, github_url=""))
         
         self.logger.info(f"--- Starting processing for paper: '{paper.title}' ---")
         
         try:
-            # Step 1: Create GitHub repository
+            if repo_state.status == ProcessingStatus.SUCCESS and local_repo_path.exists():
+                self.logger.info("Repository already successfully processed. Skipping.")
+                return
+
+            if local_repo_path.exists():
+                shutil.rmtree(local_repo_path)
+
             repo_state.status = ProcessingStatus.CREATING_REPO
             self.state_manager.update_repo_state(repo_state)
             html_url, clone_url = await self.github.create_repository(repo_name, f"AI-generated implementation of: {paper.title}")
@@ -473,13 +549,9 @@ class M1EvoAgent:
                 raise Exception("Failed to create GitHub repository.")
             repo_state.github_url = html_url
 
-            # Step 2: Initialize repo locally and push first commit
-            if local_repo_path.exists():
-                shutil.rmtree(local_repo_path) # Start fresh
             if not self.repo_manager.init_and_push_empty_repo(local_repo_path, clone_url):
                 raise Exception("Failed to initialize local repository and push initial commit.")
 
-            # Step 3: Plan the file structure
             repo_state.status = ProcessingStatus.PLANNING
             self.state_manager.update_repo_state(repo_state)
             file_plan, msg = await self.llm.plan_file_structure(paper)
@@ -487,11 +559,11 @@ class M1EvoAgent:
                 raise Exception(f"Failed to get file plan from LLM: {msg}")
             self.logger.info(f"Architect planned {len(file_plan)} files for the repository.")
 
-            # Step 4: Generate and push each file incrementally
             repo_state.status = ProcessingStatus.GENERATING_FILES
             self.state_manager.update_repo_state(repo_state)
-            
             generated_files_context = "The following files have been created so far:\n"
+            files_to_commit = []
+            
             for i, file_to_gen in enumerate(file_plan):
                 self.logger.info(f"[{i+1}/{len(file_plan)}] Generating file: {file_to_gen.path}")
                 content, msg = await self.llm.generate_file_content(paper, file_to_gen, generated_files_context)
@@ -499,24 +571,26 @@ class M1EvoAgent:
                     self.logger.error(f"Failed to generate content for {file_to_gen.path}: {msg}. Skipping file.")
                     continue
 
-                # Save file locally
-                full_path = local_repo_path / file_to_gen.path
+                full_path = self.sanitize_path(file_to_gen.path, local_repo_path)
                 full_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(full_path, 'w', encoding='utf-8') as f:
                     f.write(content)
 
-                # Commit and push the single file
-                if not self.repo_manager.add_commit_and_push_file(local_repo_path, file_to_gen.path):
-                    self.logger.warning(f"Failed to push {file_to_gen.path}. The repository may be incomplete.")
-                    # Decide whether to continue or fail hard
-                    continue
-                
+                files_to_commit.append(str(file_to_gen.path))
                 repo_state.files_generated.append(file_to_gen.path)
-                self.state_manager.update_repo_state(repo_state)
                 generated_files_context += f"- {file_to_gen.path}\n"
-                await asyncio.sleep(1) # Small delay to avoid rate limiting
+                await asyncio.sleep(1)
 
-            self.logger.info(f"Successfully generated and pushed {len(repo_state.files_generated)} files.")
+            if files_to_commit:
+                if not self.repo_manager.commit_and_push_files(local_repo_path, files_to_commit):
+                    raise Exception("Failed to commit and push generated files.")
+
+            repo_state.status = ProcessingStatus.VALIDATING
+            self.state_manager.update_repo_state(repo_state)
+            if not self.repo_manager.validate_repository(local_repo_path):
+                raise Exception("Repository validation failed.")
+
+            self.logger.info(f"Successfully generated, pushed, and validated {len(repo_state.files_generated)} files.")
             repo_state.status = ProcessingStatus.SUCCESS
 
         except Exception as e:
@@ -526,29 +600,26 @@ class M1EvoAgent:
         finally:
             self.state_manager.update_repo_state(repo_state)
             self.logger.info(f"--- Finished processing for '{paper.title}' with status: {repo_state.status.value} ---")
-            
+
     async def run(self):
-        """The main entry point to run the agent's lifecycle."""
+        """Main entry point to run the agent's lifecycle."""
         self.logger.info("M1-Evo Agent is now running. Scraping for papers...")
         papers = self.get_papers_to_process()
-
         if not papers:
             self.logger.info("No papers found in the input directory. Shutting down.")
             return
 
         self.logger.info(f"Found {len(papers)} papers to process.")
+        success_count = 0
+        tasks = [self.process_paper(paper) for paper in papers]
+        for i in range(0, len(tasks), self.config.max_concurrent_papers):
+            await asyncio.gather(*tasks[i:i + self.config.max_concurrent_papers])
         
         for paper in papers:
-            repo_name = self._generate_repo_name(paper.title)
-            state = self.state_manager.managed_repos.get(repo_name)
-            
-            # Simple check to avoid reprocessing successful repos. More complex logic can be added.
-            if state and state.status == ProcessingStatus.SUCCESS:
-                self.logger.info(f"Skipping '{paper.title}' as it has already been processed successfully.")
-                continue
-
-            await self.process_paper(paper)
-            self.logger.info("="*50)
+            repo_name = self._generate_repo_name(paper.title, paper.id)
+            if self.state_manager.managed_repos.get(repo_name, RepoState(repo_name=repo_name, github_url="")).status == ProcessingStatus.SUCCESS:
+                success_count += 1
+        self.logger.info(f"Completed processing: {success_count}/{len(papers)} papers successful.")
 
 # --- Main Execution ---
 async def main():
@@ -564,25 +635,13 @@ async def main():
             
         async with M1EvoAgent(config) as agent:
             await agent.run()
-
+        return 0
     except Exception as e:
         logging.basicConfig()
         logging.getLogger().critical(f"A critical error occurred at the top level: {e}", exc_info=True)
         return 1
-    return 0
 
 if __name__ == "__main__":
-    # To run this, you would need a `papers_to_implement` directory with JSON files,
-    # and a .env file with your API keys.
-    # Example paper.json:
-    # {
-    #   "id": "2305.12978",
-    #   "title": "Sparks of Artificial General Intelligence: Early experiments with GPT-4",
-    #   "summary": "A study on the surprising emergent abilities of large language models like GPT-4, suggesting early signs of AGI-like behavior in areas like reasoning, coding, and theory of mind."
-    # }
-    
-    # Setup asyncio event loop policy for Windows if needed
     if os.name == 'nt':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        
     sys.exit(asyncio.run(main()))
