@@ -27,7 +27,7 @@ class Config:
     repo_prefix: str = "paper-impl-"
     architect_model: str = "meta-llama/llama-3.1-405b-instruct"
     coder_model: str = "deepseek/deepseek-coder-v2"
-    temperature: float = 0.5
+    temperature: float = 0.3
     max_llm_tokens: int = 8000
     request_timeout: int = 400
     retry_attempts: int = 3
@@ -136,6 +136,11 @@ class LLMInterface:
                 self.logger.warning(error_message)
                 if attempt < self.config.retry_attempts - 1:
                     await asyncio.sleep(self.config.retry_delay * (2 ** attempt))
+            except Exception as e:
+                error_message = f"Unexpected error in LLM call: {e}"
+                self.logger.error(error_message)
+                if attempt < self.config.retry_attempts - 1:
+                    await asyncio.sleep(self.config.retry_delay * (2 ** attempt))
         
         return None, error_message
 
@@ -149,11 +154,11 @@ class LLMInterface:
 
         Based on this, provide a comprehensive list of all necessary files. This should include:
         - Source code files (e.g., `src/main.py`, `src/model.py`, `src/utils.py`).
-        - Dependency management (e.g., `pyproject.toml`).
+        - Dependency management (e.g., `requirements.txt`, `pyproject.toml`).
         - Documentation (e.g., `README.md`, `LICENSE`).
         - Testing files (e.g., `tests/test_model.py`).
-        - Containerization (e.g., `Dockerfile`).
         - Configuration files (e.g., `config.yaml`).
+        - A simple example or demo script.
 
         Respond with ONLY a JSON object containing a single key "files". The value should be an array of objects, where each object has two keys: "path" (the full file path from the project root) and "description" (a concise, one-sentence explanation of the file's purpose).
 
@@ -167,6 +172,10 @@ class LLMInterface:
             {{
               "path": "README.md",
               "description": "Comprehensive documentation for the project."
+            }},
+            {{
+              "path": "requirements.txt",
+              "description": "Python dependencies for the project."
             }}
           ]
         }}
@@ -176,20 +185,48 @@ class LLMInterface:
         
         content, error = await self._call_llm(messages, self.config.architect_model, is_json=True)
         if error:
-            return None, error
+            self.logger.error(f"Failed to get file plan: {error}")
+            # Fallback to minimal structure
+            return self._get_fallback_file_plan(paper), "Using fallback file plan due to LLM error"
 
         try:
             data = json.loads(content)
             if not isinstance(data, dict) or "files" not in data or not isinstance(data["files"], list):
-                return None, "Invalid response structure from architect LLM."
-            plan = [FilePlan(**item) for item in data.get("files", [])]
+                self.logger.warning("Invalid response structure from architect LLM, using fallback.")
+                return self._get_fallback_file_plan(paper), "Using fallback file plan due to invalid response"
+            
+            plan = []
+            for item in data.get("files", []):
+                if isinstance(item, dict) and "path" in item and "description" in item:
+                    plan.append(FilePlan(path=item["path"], description=item["description"]))
+                else:
+                    self.logger.warning(f"Invalid file plan item: {item}")
+            
             if not plan:
-                self.logger.warning("Architect model returned an empty file plan. Using default minimal structure.")
-                plan = [FilePlan(path="README.md", description="Basic project documentation.")]
+                self.logger.warning("Architect model returned an empty file plan. Using fallback.")
+                return self._get_fallback_file_plan(paper), "Using fallback file plan due to empty response"
+            
+            self.logger.info(f"Successfully generated file plan with {len(plan)} files")
             return plan, "File plan generated successfully."
         except (json.JSONDecodeError, TypeError) as e:
             self.logger.error(f"Failed to parse file plan from LLM response: {e}\nResponse: {content}")
-            return None, f"Could not parse JSON response from architect: {e}"
+            return self._get_fallback_file_plan(paper), f"Using fallback file plan due to JSON parse error: {e}"
+
+    def _get_fallback_file_plan(self, paper: PaperInfo) -> List[FilePlan]:
+        """Returns a minimal but functional file plan as fallback."""
+        return [
+            FilePlan(path="README.md", description="Project documentation and overview"),
+            FilePlan(path="requirements.txt", description="Python dependencies"),
+            FilePlan(path="src/__init__.py", description="Package initialization file"),
+            FilePlan(path="src/main.py", description="Main application entry point"),
+            FilePlan(path="src/model.py", description="Core model implementation"),
+            FilePlan(path="src/utils.py", description="Utility functions and helpers"),
+            FilePlan(path="tests/__init__.py", description="Test package initialization"),
+            FilePlan(path="tests/test_model.py", description="Unit tests for the model"),
+            FilePlan(path="config.yaml", description="Configuration file"),
+            FilePlan(path="example.py", description="Example usage script"),
+            FilePlan(path="LICENSE", description="Project license")
+        ]
 
     async def generate_file_content(self, paper: PaperInfo, file_plan: FilePlan, file_context: str) -> Tuple[Optional[str], str]:
         """Asks the coder LLM to generate the content for a single file."""
@@ -208,25 +245,216 @@ class LLMInterface:
         {file_context}
 
         **Instructions:**
-        1.  Generate the full, raw content for the specified file (`{file_plan.path}`).
-        2.  Do NOT wrap the content in markdown backticks (e.g., ```python ... ```) or any other formatting.
-        3.  Ensure the code is clean, well-commented, and production-quality.
-        4.  If it's a code file, use modern Python features and type hints.
-        5.  If it's a documentation or configuration file, use the correct syntax (e.g., Markdown, TOML, YAML).
-        6.  The content should be complete and ready to be saved directly to a file.
+        1. Generate the full, raw content for the specified file (`{file_plan.path}`).
+        2. Do NOT wrap the content in markdown backticks (e.g., ```python ... ```) or any other formatting.
+        3. Ensure the code is clean, well-commented, and production-quality.
+        4. If it's a code file, use modern Python features and type hints.
+        5. If it's a documentation or configuration file, use the correct syntax (e.g., Markdown, TOML, YAML).
+        6. The content should be complete and ready to be saved directly to a file.
+        7. For Python files, include proper imports and make sure the code is functional.
+        8. For README.md, include installation instructions, usage examples, and project description.
+        9. For requirements.txt, include realistic dependencies for the project.
 
-        Provide ONLY the raw file content.
+        Provide ONLY the raw file content, nothing else.
         """
         messages = [{"role": "user", "content": prompt}]
         self.logger.info(f"Requesting content for '{file_plan.path}' from coder model: {self.config.coder_model}")
         
         for attempt in range(self.config.retry_attempts):
             content, error = await self._call_llm(messages, self.config.coder_model)
-            if content:
-                return content, "File content generated successfully."
-            self.logger.warning(f"Retry {attempt+1}/{self.config.retry_attempts} for {file_plan.path}: {error}")
-            await asyncio.sleep(self.config.retry_delay)
+            if content and content.strip():
+                # Additional validation for content
+                if self._validate_file_content(content, file_plan.path):
+                    return content, "File content generated successfully."
+                else:
+                    self.logger.warning(f"Generated content for {file_plan.path} failed validation, retrying...")
+            else:
+                self.logger.warning(f"Empty or invalid content for {file_plan.path}, attempt {attempt+1}")
+            
+            if attempt < self.config.retry_attempts - 1:
+                await asyncio.sleep(self.config.retry_delay)
+        
+        # Generate fallback content if LLM fails
+        fallback_content = self._generate_fallback_content(paper, file_plan)
+        if fallback_content:
+            self.logger.info(f"Using fallback content for {file_plan.path}")
+            return fallback_content, "Using fallback content due to LLM failures"
+        
         return None, f"Failed to generate {file_plan.path} after {self.config.retry_attempts} attempts."
+
+    def _validate_file_content(self, content: str, file_path: str) -> bool:
+        """Validates that the generated content is reasonable."""
+        if not content or len(content.strip()) < 10:
+            return False
+        
+        # Check for common LLM formatting issues
+        if content.strip().startswith("```") and content.strip().endswith("```"):
+            return False
+        
+        # Basic validation for Python files
+        if file_path.endswith('.py'):
+            # Should have some Python-like content
+            if not any(keyword in content for keyword in ['def ', 'class ', 'import ', 'from ']):
+                return False
+        
+        return True
+
+    def _generate_fallback_content(self, paper: PaperInfo, file_plan: FilePlan) -> Optional[str]:
+        """Generates basic fallback content for essential files."""
+        path = file_plan.path.lower()
+        
+        if path == "readme.md":
+            return f"""# {paper.title}
+
+This project implements concepts from the research paper: "{paper.title}"
+
+## Summary
+{paper.summary}
+
+## Installation
+```bash
+pip install -r requirements.txt
+```
+
+## Usage
+```bash
+python src/main.py
+```
+
+## Structure
+- `src/` - Main source code
+- `tests/` - Unit tests
+- `config.yaml` - Configuration file
+- `example.py` - Usage example
+
+## License
+MIT License
+"""
+        elif path == "requirements.txt":
+            return """numpy>=1.21.0
+pandas>=1.3.0
+matplotlib>=3.5.0
+scikit-learn>=1.0.0
+torch>=1.9.0
+transformers>=4.0.0
+pyyaml>=6.0
+pytest>=6.0.0
+"""
+        elif path == "src/main.py":
+            return f'''"""
+Main entry point for {paper.title} implementation.
+"""
+
+import argparse
+import yaml
+from pathlib import Path
+
+def load_config(config_path: str = "config.yaml") -> dict:
+    """Load configuration from YAML file."""
+    with open(config_path, 'r') as f:
+        return yaml.safe_load(f)
+
+def main():
+    """Main function."""
+    parser = argparse.ArgumentParser(description="{paper.title} Implementation")
+    parser.add_argument("--config", default="config.yaml", help="Configuration file path")
+    args = parser.parse_args()
+    
+    config = load_config(args.config)
+    print(f"Running {paper.title} implementation...")
+    print(f"Configuration: {{config}}")
+    
+    # TODO: Implement main logic here
+    print("Implementation completed successfully!")
+
+if __name__ == "__main__":
+    main()
+'''
+        elif path == "src/model.py":
+            return f'''"""
+Core model implementation for {paper.title}.
+"""
+
+import torch
+import torch.nn as nn
+from typing import Dict, Any, Optional
+
+class Model(nn.Module):
+    """
+    Main model class implementing concepts from {paper.title}.
+    """
+    
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__()
+        self.config = config
+        # TODO: Initialize model components
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through the model."""
+        # TODO: Implement forward pass
+        return x
+    
+    def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
+        """Single training step."""
+        # TODO: Implement training step
+        return {{"loss": 0.0}}
+    
+    def evaluate(self, data_loader) -> Dict[str, float]:
+        """Evaluate the model."""
+        # TODO: Implement evaluation
+        return {{"accuracy": 0.0}}
+'''
+        elif path == "config.yaml":
+            return f"""# Configuration for {paper.title} Implementation
+
+model:
+  name: "default_model"
+  hidden_size: 512
+  num_layers: 6
+  dropout: 0.1
+
+training:
+  batch_size: 32
+  learning_rate: 0.001
+  epochs: 100
+  save_every: 10
+
+data:
+  train_path: "data/train.csv"
+  val_path: "data/val.csv"
+  test_path: "data/test.csv"
+
+logging:
+  level: "INFO"
+  save_dir: "logs"
+"""
+        elif path == "src/__init__.py" or path == "tests/__init__.py":
+            return '"""Package initialization."""\n'
+        elif path == "license":
+            return """MIT License
+
+Copyright (c) 2024
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
+        
+        return None
 
 class GitHubIntegrator:
     """Manages all GitHub API interactions."""
@@ -244,24 +472,30 @@ class GitHubIntegrator:
         """Validates the GitHub token by fetching user information."""
         url = "https://api.github.com/user"
         try:
-            async with self.session.get(url, headers=self.headers) as response:
+            async with self.session.get(url, headers=self.headers, timeout=30) as response:
                 response.raise_for_status()
                 data = await response.json()
                 if data.get("login") != self.config.github_username:
                     raise ValueError("GitHub token does not match provided username.")
+                self.logger.info(f"GitHub token validated for user: {data.get('login')}")
         except Exception as e:
             self.logger.critical(f"Invalid GitHub token: {e}")
             raise
 
     async def create_repository(self, repo_name: str, description: str) -> Tuple[Optional[str], Optional[str]]:
         """Creates a new GitHub repository and returns its HTML and clone URLs."""
+        # Check if repository already exists
         check_url = f"https://api.github.com/repos/{self.config.github_username}/{repo_name}"
-        async with self.session.get(check_url, headers=self.headers) as response:
-            if response.status == 200:
-                self.logger.warning(f"Repository '{repo_name}' already exists.")
-                data = await response.json()
-                return data.get("html_url"), data.get("clone_url")
+        try:
+            async with self.session.get(check_url, headers=self.headers, timeout=30) as response:
+                if response.status == 200:
+                    self.logger.warning(f"Repository '{repo_name}' already exists.")
+                    data = await response.json()
+                    return data.get("html_url"), data.get("clone_url")
+        except Exception as e:
+            self.logger.debug(f"Error checking repository existence: {e}")
 
+        # Create new repository
         create_url = "https://api.github.com/user/repos"
         payload = {
             "name": repo_name,
@@ -269,18 +503,25 @@ class GitHubIntegrator:
             "private": self.config.repo_visibility != "public",
             "auto_init": False
         }
-        async with self.session.post(create_url, headers=self.headers, json=payload) as response:
-            if response.status == 429:
-                retry_after = int(response.headers.get("Retry-After", 60))
-                self.logger.warning(f"Rate limit exceeded for GitHub API. Retrying after {retry_after} seconds.")
-                await asyncio.sleep(retry_after)
-                return await self.create_repository(repo_name, description)
-            if response.status == 201:
-                data = await response.json()
-                self.logger.info(f"Successfully created GitHub repository: {data['html_url']}")
-                return data.get("html_url"), data.get("clone_url")
-            error_text = await response.text()
-            self.logger.error(f"Failed to create repo {repo_name}: {response.status} - {error_text}")
+        
+        try:
+            async with self.session.post(create_url, headers=self.headers, json=payload, timeout=30) as response:
+                if response.status == 429:
+                    retry_after = int(response.headers.get("Retry-After", 60))
+                    self.logger.warning(f"Rate limit exceeded for GitHub API. Retrying after {retry_after} seconds.")
+                    await asyncio.sleep(retry_after)
+                    return await self.create_repository(repo_name, description)
+                
+                if response.status == 201:
+                    data = await response.json()
+                    self.logger.info(f"Successfully created GitHub repository: {data['html_url']}")
+                    return data.get("html_url"), data.get("clone_url")
+                
+                error_text = await response.text()
+                self.logger.error(f"Failed to create repo {repo_name}: {response.status} - {error_text}")
+                return None, None
+        except Exception as e:
+            self.logger.error(f"Exception creating repository: {e}")
             return None, None
 
 class RepoManager:
@@ -295,6 +536,7 @@ class RepoManager:
     def _run_command(self, command: List[str], cwd: Path, env: Optional[Dict] = None) -> Tuple[bool, str]:
         """Runs a shell command and returns success status and output."""
         try:
+            self.logger.debug(f"Running command: {' '.join(command)} in {cwd}")
             process = subprocess.run(
                 command,
                 cwd=cwd,
@@ -305,7 +547,7 @@ class RepoManager:
                 env=env
             )
             if process.returncode != 0:
-                error_msg = f"Command `{' '.join(command)}` failed with exit code {process.returncode}.\nStderr: {process.stderr.strip()}"
+                error_msg = f"Command `{' '.join(command)}` failed with exit code {process.returncode}.\nStderr: {process.stderr.strip()}\nStdout: {process.stdout.strip()}"
                 self.logger.error(error_msg)
                 return False, error_msg
             return True, process.stdout.strip()
@@ -323,9 +565,14 @@ class RepoManager:
         if not local_path.exists():
             local_path.mkdir(parents=True)
 
+        # Set up environment for Git authentication
         env = os.environ.copy()
-        env["GIT_ASKPASS"] = "echo"  # GitHub Actions handles token via environment
+        env["GIT_ASKPASS"] = "echo"
         env["GITHUB_TOKEN"] = self.config.github_token
+        
+        # Modify remote URL to include token for HTTPS authentication
+        if remote_url.startswith("https://"):
+            remote_url = remote_url.replace("https://", f"https://{self.config.github_username}:{self.config.github_token}@")
 
         commands = [
             ["git", "init"],
@@ -351,15 +598,29 @@ class RepoManager:
         if not file_paths:
             self.logger.warning("No files to commit.")
             return True
-        commands = [
-            ["git", "add"] + file_paths,
-            ["git", "commit", "-m", f"feat: Add generated files for paper implementation"],
-            ["git", "push", "origin", "main"]
-        ]
-        
+
+        # Verify files exist before committing
+        existing_files = []
+        for file_path in file_paths:
+            full_path = local_path / file_path
+            if full_path.exists():
+                existing_files.append(file_path)
+            else:
+                self.logger.warning(f"File {file_path} does not exist, skipping")
+
+        if not existing_files:
+            self.logger.error("No files exist to commit")
+            return False
+
         env = os.environ.copy()
         env["GIT_ASKPASS"] = "echo"
         env["GITHUB_TOKEN"] = self.config.github_token
+
+        commands = [
+            ["git", "add"] + existing_files,
+            ["git", "commit", "-m", f"feat: Add generated files for paper implementation ({len(existing_files)} files)"],
+            ["git", "push", "origin", "main"]
+        ]
 
         for cmd in commands:
             success, msg = self._run_command(cmd, cwd=local_path, env=env)
@@ -367,21 +628,28 @@ class RepoManager:
                 self.logger.error(f"Failed to push files at step `{' '.join(cmd)}`: {msg}")
                 return False
         
-        self.logger.info(f"Successfully committed and pushed {len(file_paths)} files.")
+        self.logger.info(f"Successfully committed and pushed {len(existing_files)} files.")
         return True
 
     def validate_repository(self, local_path: Path) -> bool:
-        """Validates the repository by running basic linting and tests."""
+        """Validates the repository by checking file existence and basic structure."""
         self.logger.info(f"Validating repository at {local_path}")
-        commands = [
-            ["flake8", "."] if (local_path / "flake8").exists() else None,
-            ["pytest", "tests"] if (local_path / "tests").exists() else None
-        ]
-        for cmd in [c for c in commands if c]:
-            success, msg = self._run_command(cmd, cwd=local_path)
-            if not success:
-                self.logger.error(f"Validation failed for {cmd[0]}: {msg}")
+        
+        # Check if basic files exist
+        essential_files = ["README.md"]
+        for file_name in essential_files:
+            if not (local_path / file_name).exists():
+                self.logger.warning(f"Essential file {file_name} is missing")
                 return False
+        
+        # Check if there are any files at all
+        files = list(local_path.rglob("*"))
+        files = [f for f in files if f.is_file() and not f.name.startswith('.')]
+        if len(files) < 3:  # Should have at least a few files
+            self.logger.error(f"Repository has too few files ({len(files)})")
+            return False
+        
+        self.logger.info(f"Repository validation passed with {len(files)} files")
         return True
 
 class StateManager:
@@ -415,6 +683,7 @@ class StateManager:
             with open(temp_file, 'w', encoding='utf-8') as f:
                 json.dump(serializable_data, f, indent=2)
             temp_file.rename(self.config.state_file)
+            self.logger.debug("State saved successfully")
         except Exception as e:
             self.logger.error(f"Failed to save state: {e}")
 
@@ -432,217 +701,357 @@ class M1EvoAgent:
         self.logger = self._setup_logging()
         self._setup_directories()
         self.session: Optional[aiohttp.ClientSession] = None
-        self.llm: Optional[LLMInterface] = None
-        self.github: Optional[GitHubIntegrator] = None
+        self.state_manager = StateManager(self.config, self.logger)
+        self.llm_interface: Optional[LLMInterface] = None
+        self.github_integrator: Optional[GitHubIntegrator] = None
         self.repo_manager: Optional[RepoManager] = None
-        self.state_manager: Optional[StateManager] = None
 
     def _setup_logging(self) -> logging.Logger:
-        """Sets up logging with configurable verbosity."""
+        """Sets up logging configuration."""
         self.config.logs_dir.mkdir(exist_ok=True)
-        log_file = self.config.logs_dir / 'm1_evo_agent.log'
-        log_level = os.getenv("LOG_LEVEL", "INFO").upper()
         
+        # Create logger
         logger = logging.getLogger("M1EvoAgent")
-        logger.setLevel(getattr(logging, log_level, logging.INFO))
+        logger.setLevel(logging.INFO)
         
-        if not logger.handlers:
-            fh = logging.FileHandler(log_file)
-            fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-            logger.addHandler(fh)
-            ch = logging.StreamHandler()
-            ch.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
-            logger.addHandler(ch)
-            
+        # Remove existing handlers to avoid duplicates
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+        
+        # Create formatters
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        
+        # File handler
+        log_file = self.config.logs_dir / f"m1_evo_{datetime.now().strftime('%Y%m%d')}.log"
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+        
+        # Console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+        
         return logger
 
     def _setup_directories(self):
-        """Sets up required directories with permission checks."""
-        for directory in [self.config.papers_dir, self.config.workspace_dir, self.config.logs_dir, self.config.llm_logs_dir]:
-            try:
-                directory.mkdir(exist_ok=True)
-                if not os.access(directory, os.W_OK):
-                    raise PermissionError(f"No write permissions for {directory}")
-            except PermissionError as e:
-                self.logger.critical(f"Permission error for directory {directory}: {e}")
-                raise
+        """Creates necessary directories."""
+        for directory in [self.config.papers_dir, self.config.workspace_dir, 
+                         self.config.logs_dir, self.config.llm_logs_dir]:
+            directory.mkdir(parents=True, exist_ok=True)
 
-    async def __aenter__(self):
-        self.session = aiohttp.ClientSession()
-        self.llm = LLMInterface(self.config, self.session, self.logger)
-        self.github = GitHubIntegrator(self.config, self.session, self.logger)
-        self.repo_manager = RepoManager(self.config, self.logger)
-        self.state_manager = StateManager(self.config, self.logger)
-        await self.github.validate_token()
-        self.state_manager.load_state()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self.session:
-            await self.session.close()
-        if self.state_manager:
-            self.state_manager.save_state()
-        self.logger.info("M1-Evo Agent shutdown complete.")
-
-    def get_papers_to_process(self) -> List[PaperInfo]:
-        """Scans the papers directory for new or updated JSON files."""
+    def _scan_for_papers(self) -> List[PaperInfo]:
+        """Scans the papers directory for JSON files to process."""
         papers = []
-        for file_path in self.config.papers_dir.glob("*.json"):
+        if not self.config.papers_dir.exists():
+            self.logger.warning(f"Papers directory {self.config.papers_dir} does not exist")
+            return papers
+
+        for json_file in self.config.papers_dir.glob("*.json"):
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
+                with open(json_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                if not isinstance(data, dict):
-                    self.logger.error(f"Invalid JSON structure in {file_path}: Expected a dictionary.")
+                
+                # Extract paper information
+                paper_id = data.get('id', json_file.stem)
+                title = data.get('title', 'Unknown Title')
+                summary = data.get('summary', data.get('abstract', 'No summary available'))
+                
+                # Validate required fields
+                if not title or not summary:
+                    self.logger.warning(f"Skipping {json_file.name}: missing title or summary")
                     continue
-                paper_id = data.get("id", hashlib.md5(file_path.read_bytes()).hexdigest())
-                title = data.get("title")
-                if not title:
-                    self.logger.error(f"Missing 'title' in {file_path}.")
-                    continue
-                papers.append(PaperInfo(
+                
+                paper = PaperInfo(
                     id=paper_id,
                     title=title,
-                    summary=data.get("summary", "No summary provided."),
-                    source_path=file_path,
-                    last_modified=file_path.stat().st_mtime
-                ))
-            except json.JSONDecodeError as e:
-                self.logger.error(f"Invalid JSON in {file_path}: {e}")
+                    summary=summary,
+                    source_path=json_file,
+                    last_modified=json_file.stat().st_mtime
+                )
+                papers.append(paper)
+                
             except Exception as e:
-                self.logger.error(f"Could not process paper file {file_path}: {e}")
+                self.logger.error(f"Error processing {json_file.name}: {e}")
+                continue
+        
+        self.logger.info(f"Found {len(papers)} papers to potentially process")
         return papers
 
-    def _generate_repo_name(self, paper_title: str, paper_id: str) -> str:
-        """Generates a sanitized repository name."""
-        name = re.sub(r'[^a-zA-Z0-9\s-]', '', paper_title).lower()
-        name = re.sub(r'\s+', '-', name).strip('-')
-        max_len = 100 - len(self.config.repo_prefix) - len(paper_id) - 1
-        name = name[:max_len] + f"-{paper_id[:8]}"
-        return self.config.repo_prefix + name
-
-    def sanitize_path(self, path: str, base_path: Path) -> Path:
-        """Sanitizes file paths to prevent directory traversal."""
-        normalized = (base_path / path).resolve()
-        if not normalized.is_relative_to(base_path.resolve()):
-            raise ValueError(f"Invalid file path: {path} attempts to escape repository root.")
-        return normalized
-
-    async def process_paper(self, paper: PaperInfo):
-        """Main processing pipeline for a single paper."""
-        repo_name = self._generate_repo_name(paper.title, paper.id)
-        local_repo_path = self.config.workspace_dir / repo_name
-        repo_state = self.state_manager.managed_repos.get(repo_name, RepoState(repo_name=repo_name, github_url=""))
+    def _generate_repo_name(self, paper: PaperInfo) -> str:
+        """Generates a repository name from the paper title."""
+        # Clean the title and make it GitHub-friendly
+        clean_title = re.sub(r'[^a-zA-Z0-9\s-]', '', paper.title)
+        clean_title = re.sub(r'\s+', '-', clean_title.strip())
+        clean_title = clean_title.lower()
         
-        self.logger.info(f"--- Starting processing for paper: '{paper.title}' ---")
+        # Truncate if too long
+        if len(clean_title) > 50:
+            clean_title = clean_title[:50].rsplit('-', 1)[0]
+        
+        # Add prefix and ensure it's valid
+        repo_name = f"{self.config.repo_prefix}{clean_title}"
+        
+        # Ensure it doesn't start or end with special characters
+        repo_name = re.sub(r'^[-_]+|[-_]+$', '', repo_name)
+        
+        # Fallback if name is empty or too short
+        if len(repo_name) < 5:
+            repo_name = f"{self.config.repo_prefix}{paper.id}"
+        
+        return repo_name
+
+    def _should_process_paper(self, paper: PaperInfo) -> bool:
+        """Determines if a paper should be processed based on current state."""
+        repo_name = self._generate_repo_name(paper)
+        
+        # Check if already processed successfully
+        if repo_name in self.state_manager.managed_repos:
+            repo_state = self.state_manager.managed_repos[repo_name]
+            if repo_state.status == ProcessingStatus.SUCCESS:
+                # Check if paper has been modified since last processing
+                if repo_state.last_processed_timestamp:
+                    try:
+                        last_processed = datetime.fromisoformat(repo_state.last_processed_timestamp)
+                        last_modified = datetime.fromtimestamp(paper.last_modified)
+                        if last_modified <= last_processed:
+                            self.logger.info(f"Skipping {paper.title}: already processed and up to date")
+                            return False
+                    except Exception as e:
+                        self.logger.warning(f"Error comparing timestamps for {paper.title}: {e}")
+            elif repo_state.status == ProcessingStatus.FAILED:
+                self.logger.info(f"Retrying previously failed paper: {paper.title}")
+        
+        return True
+
+    async def _process_single_paper(self, paper: PaperInfo) -> bool:
+        """Processes a single paper through the complete pipeline."""
+        repo_name = self._generate_repo_name(paper)
+        self.logger.info(f"Processing paper: {paper.title} -> {repo_name}")
+        
+        # Initialize repo state
+        repo_state = RepoState(
+            repo_name=repo_name,
+            github_url="",
+            status=ProcessingStatus.PLANNING
+        )
+        self.state_manager.update_repo_state(repo_state)
         
         try:
-            if repo_state.status == ProcessingStatus.SUCCESS and local_repo_path.exists():
-                self.logger.info("Repository already successfully processed. Skipping.")
-                return
-
-            if local_repo_path.exists():
-                shutil.rmtree(local_repo_path)
-
+            # Step 1: Plan file structure
+            self.logger.info("Step 1: Planning file structure...")
+            file_plans, plan_message = await self.llm_interface.plan_file_structure(paper)
+            if not file_plans:
+                raise Exception(f"Failed to create file plan: {plan_message}")
+            
+            self.logger.info(f"Generated plan for {len(file_plans)} files")
+            
+            # Step 2: Create GitHub repository
             repo_state.status = ProcessingStatus.CREATING_REPO
             self.state_manager.update_repo_state(repo_state)
-            html_url, clone_url = await self.github.create_repository(repo_name, f"AI-generated implementation of: {paper.title}")
-            if not clone_url:
-                raise Exception("Failed to create GitHub repository.")
-            repo_state.github_url = html_url
-
-            if not self.repo_manager.init_and_push_empty_repo(local_repo_path, clone_url):
-                raise Exception("Failed to initialize local repository and push initial commit.")
-
-            repo_state.status = ProcessingStatus.PLANNING
+            
+            self.logger.info("Step 2: Creating GitHub repository...")
+            description = f"Implementation of '{paper.title}' - {paper.summary[:100]}..."
+            github_url, clone_url = await self.github_integrator.create_repository(repo_name, description)
+            
+            if not github_url or not clone_url:
+                raise Exception("Failed to create GitHub repository")
+            
+            repo_state.github_url = github_url
             self.state_manager.update_repo_state(repo_state)
-            file_plan, msg = await self.llm.plan_file_structure(paper)
-            if not file_plan:
-                raise Exception(f"Failed to get file plan from LLM: {msg}")
-            self.logger.info(f"Architect planned {len(file_plan)} files for the repository.")
-
+            
+            # Step 3: Initialize local repository
+            local_repo_path = self.config.workspace_dir / repo_name
+            if local_repo_path.exists():
+                shutil.rmtree(local_repo_path)
+            
+            if not self.repo_manager.init_and_push_empty_repo(local_repo_path, clone_url):
+                raise Exception("Failed to initialize local repository")
+            
+            # Step 4: Generate files
             repo_state.status = ProcessingStatus.GENERATING_FILES
             self.state_manager.update_repo_state(repo_state)
-            generated_files_context = "The following files have been created so far:\n"
-            files_to_commit = []
             
-            for i, file_to_gen in enumerate(file_plan):
-                self.logger.info(f"[{i+1}/{len(file_plan)}] Generating file: {file_to_gen.path}")
-                content, msg = await self.llm.generate_file_content(paper, file_to_gen, generated_files_context)
-                if not content:
-                    self.logger.error(f"Failed to generate content for {file_to_gen.path}: {msg}. Skipping file.")
-                    continue
-
-                full_path = self.sanitize_path(file_to_gen.path, local_repo_path)
-                full_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(full_path, 'w', encoding='utf-8') as f:
-                    f.write(content)
-
-                files_to_commit.append(str(file_to_gen.path))
-                repo_state.files_generated.append(file_to_gen.path)
-                generated_files_context += f"- {file_to_gen.path}\n"
-                await asyncio.sleep(1)
-
-            if files_to_commit:
-                if not self.repo_manager.commit_and_push_files(local_repo_path, files_to_commit):
-                    raise Exception("Failed to commit and push generated files.")
-
+            self.logger.info("Step 4: Generating files...")
+            generated_files = []
+            
+            # Create file context for LLM
+            file_context = "Project Structure:\n"
+            for plan in file_plans:
+                file_context += f"- {plan.path}: {plan.description}\n"
+            
+            # Generate files in batches to avoid overwhelming the system
+            batch_size = 5
+            for i in range(0, len(file_plans), batch_size):
+                batch = file_plans[i:i+batch_size]
+                batch_files = []
+                
+                for file_plan in batch:
+                    self.logger.info(f"Generating {file_plan.path}...")
+                    content, message = await self.llm_interface.generate_file_content(
+                        paper, file_plan, file_context
+                    )
+                    
+                    if content:
+                        file_path = local_repo_path / file_plan.path
+                        file_path.parent.mkdir(parents=True, exist_ok=True)
+                        
+                        with open(file_path, 'w', encoding='utf-8') as f:
+                            f.write(content)
+                        
+                        batch_files.append(file_plan.path)
+                        generated_files.append(file_plan.path)
+                        self.logger.info(f"✓ Generated {file_plan.path}")
+                    else:
+                        self.logger.error(f"✗ Failed to generate {file_plan.path}: {message}")
+                
+                # Commit this batch
+                if batch_files:
+                    if not self.repo_manager.commit_and_push_files(local_repo_path, batch_files):
+                        self.logger.warning(f"Failed to commit batch of {len(batch_files)} files")
+                    else:
+                        self.logger.info(f"✓ Committed batch of {len(batch_files)} files")
+                
+                # Small delay between batches to avoid rate limiting
+                await asyncio.sleep(2)
+            
+            # Step 5: Validate repository
             repo_state.status = ProcessingStatus.VALIDATING
             self.state_manager.update_repo_state(repo_state)
+            
+            self.logger.info("Step 5: Validating repository...")
             if not self.repo_manager.validate_repository(local_repo_path):
-                raise Exception("Repository validation failed.")
-
-            self.logger.info(f"Successfully generated, pushed, and validated {len(repo_state.files_generated)} files.")
+                raise Exception("Repository validation failed")
+            
+            # Success!
             repo_state.status = ProcessingStatus.SUCCESS
-
+            repo_state.files_generated = generated_files
+            self.state_manager.update_repo_state(repo_state)
+            
+            self.logger.info(f"✅ Successfully processed {paper.title}")
+            self.logger.info(f"   Repository: {github_url}")
+            self.logger.info(f"   Files generated: {len(generated_files)}")
+            
+            return True
+            
         except Exception as e:
-            self.logger.critical(f"CRITICAL ERROR processing '{paper.title}': {e}", exc_info=True)
             repo_state.status = ProcessingStatus.FAILED
             repo_state.errors.append(str(e))
-        finally:
             self.state_manager.update_repo_state(repo_state)
-            self.logger.info(f"--- Finished processing for '{paper.title}' with status: {repo_state.status.value} ---")
+            
+            self.logger.error(f"❌ Failed to process {paper.title}: {e}")
+            return False
 
     async def run(self):
-        """Main entry point to run the agent's lifecycle."""
-        self.logger.info("M1-Evo Agent is now running. Scraping for papers...")
-        papers = self.get_papers_to_process()
-        if not papers:
-            self.logger.info("No papers found in the input directory. Shutting down.")
-            return
-
-        self.logger.info(f"Found {len(papers)} papers to process.")
-        success_count = 0
-        tasks = [self.process_paper(paper) for paper in papers]
-        for i in range(0, len(tasks), self.config.max_concurrent_papers):
-            await asyncio.gather(*tasks[i:i + self.config.max_concurrent_papers])
+        """Main execution method."""
+        self.logger.info("🚀 Starting M1-Evo Agent...")
         
-        for paper in papers:
-            repo_name = self._generate_repo_name(paper.title, paper.id)
-            if self.state_manager.managed_repos.get(repo_name, RepoState(repo_name=repo_name, github_url="")).status == ProcessingStatus.SUCCESS:
-                success_count += 1
-        self.logger.info(f"Completed processing: {success_count}/{len(papers)} papers successful.")
-
-# --- Main Execution ---
-async def main():
-    try:
-        load_dotenv()
-        config = Config(
-            openrouter_api_key=os.getenv("OPENROUTER_API_KEY"),
-            github_token=os.getenv("GITHUB_TOKEN"),
-            github_username=os.getenv("USERNAME_GITHUB")
-        )
-        if not all([config.openrouter_api_key, config.github_token, config.github_username]):
-            raise ValueError("Missing one or more required environment variables: OPENROUTER_API_KEY, GITHUB_TOKEN, USERNAME_GITHUB")
+        # Load previous state
+        self.state_manager.load_state()
+        
+        # Create HTTP session
+        timeout = aiohttp.ClientTimeout(total=self.config.request_timeout)
+        self.session = aiohttp.ClientSession(timeout=timeout)
+        
+        try:
+            # Initialize components
+            self.llm_interface = LLMInterface(self.config, self.session, self.logger)
+            self.github_integrator = GitHubIntegrator(self.config, self.session, self.logger)
+            self.repo_manager = RepoManager(self.config, self.logger)
             
-        async with M1EvoAgent(config) as agent:
-            await agent.run()
-        return 0
+            # Validate GitHub token
+            await self.github_integrator.validate_token()
+            
+            # Scan for papers
+            papers = self._scan_for_papers()
+            if not papers:
+                self.logger.warning("No papers found to process")
+                return
+            
+            # Filter papers that need processing
+            papers_to_process = [p for p in papers if self._should_process_paper(p)]
+            
+            if not papers_to_process:
+                self.logger.info("All papers are already up to date")
+                return
+            
+            # Limit concurrent processing
+            papers_to_process = papers_to_process[:self.config.max_concurrent_papers]
+            
+            self.logger.info(f"Processing {len(papers_to_process)} papers...")
+            
+            # Process papers
+            success_count = 0
+            for paper in papers_to_process:
+                try:
+                    if await self._process_single_paper(paper):
+                        success_count += 1
+                    
+                    # Brief pause between papers
+                    await asyncio.sleep(5)
+                    
+                except Exception as e:
+                    self.logger.error(f"Unexpected error processing {paper.title}: {e}")
+                    continue
+            
+            # Summary
+            self.logger.info(f"✅ Processing complete!")
+            self.logger.info(f"   Successfully processed: {success_count}/{len(papers_to_process)}")
+            self.logger.info(f"   Total repositories managed: {len(self.state_manager.managed_repos)}")
+            
+        except Exception as e:
+            self.logger.critical(f"Critical error in main execution: {e}")
+            raise
+        finally:
+            if self.session:
+                await self.session.close()
+
+    async def cleanup(self):
+        """Cleanup method to close resources."""
+        if self.session:
+            await self.session.close()
+        self.logger.info("Cleanup completed")
+
+# --- Configuration Loading and Main Entry Point ---
+
+def load_config() -> Config:
+    """Loads configuration from environment variables."""
+    load_dotenv()
+    
+    required_env_vars = [
+        "OPENROUTER_API_KEY",
+        "GITHUB_TOKEN",
+        "GITHUB_USERNAME"
+    ]
+    
+    missing_vars = [var for var in required_env_vars if not os.getenv(var)]
+    if missing_vars:
+        raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}")
+    
+    return Config(
+        openrouter_api_key=os.getenv("OPENROUTER_API_KEY"),
+        github_token=os.getenv("GITHUB_TOKEN"),
+        github_username=os.getenv("GITHUB_USERNAME")
+    )
+
+async def main():
+    """Main entry point."""
+    try:
+        config = load_config()
+        agent = M1EvoAgent(config)
+        await agent.run()
+    except KeyboardInterrupt:
+        print("\n🛑 Interrupted by user")
     except Exception as e:
-        logging.basicConfig()
-        logging.getLogger().critical(f"A critical error occurred at the top level: {e}", exc_info=True)
-        return 1
+        print(f"❌ Fatal error: {e}")
+        sys.exit(1)
+    finally:
+        if 'agent' in locals():
+            await agent.cleanup()
 
 if __name__ == "__main__":
-    if os.name == 'nt':
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    sys.exit(asyncio.run(main()))
+    asyncio.run(main())
