@@ -42,7 +42,7 @@ class ExtractionConfig:
     openrouter_api_key: str
     model: str = "anthropic/claude-3-haiku"  # Cheaper model for free tier
     temperature: float = 0.1
-    max_tokens: int = 4000
+    max_tokens: int = 1000  # Reduced from 4000 to save credits
     
     # Rate limiting for free tier
     requests_per_minute: int = 8  # Conservative for free tier
@@ -550,44 +550,23 @@ class AdvancedPaperExtractor:
             except Exception as e:
                 self.logger.warning(f"Failed to load cache: {e}")
         
-        system_prompt = """You are an expert research paper analyzer. Extract specific technical details from the given text chunk.
-
-Focus on:
-1. Mathematical formulations and equations
-2. Algorithm descriptions and pseudocode
-3. Model architecture details
-4. Hyperparameters and configuration values
-5. Dataset information and preprocessing steps
-6. Evaluation metrics and experimental setup
-7. Implementation hints and code references
-
-Return your analysis as a structured JSON object."""
+        system_prompt = """You are a research paper analyzer. Extract key technical information from the given text chunk in a simple, readable format."""
         
-        user_prompt = f"""Analyze this section from a research paper:
+        user_prompt = f"""Analyze this section from a research paper and extract key technical details:
 
 Section: {chunk.section}
 Content:
 {chunk.content}
 
-Extract all technical details in JSON format:
-{{
-  "mathematical_formulations": [
-    {{"equation": "formula", "description": "what it represents", "variables": {{"var": "meaning"}}}}
-  ],
-  "algorithms": [
-    {{"name": "algorithm name", "steps": ["step 1", "step 2"], "complexity": "O(n)"}}
-  ],
-  "model_architecture": {{
-    "layers": [], "parameters": {{}}, "architecture_type": ""
-  }},
-  "hyperparameters": {{"param": "value"}},
-  "datasets": ["dataset names"],
-  "evaluation_metrics": ["metric names"],
-  "implementation_notes": ["specific implementation details"],
-  "key_insights": ["important findings or contributions"]
-}}
+Provide a concise summary focusing on:
+- Key algorithms or methods
+- Important equations or formulas  
+- Model architecture details
+- Hyperparameters and settings
+- Datasets and evaluation metrics
+- Implementation details
 
-Only include information that is explicitly mentioned in the text."""
+Keep the response concise and technical."""
         
         self.logger.info(f"Analyzing chunk {chunk.chunk_id} ({chunk.section})")
         
@@ -597,21 +576,20 @@ Only include information that is explicitly mentioned in the text."""
             self.logger.error(f"Failed to analyze chunk {chunk.chunk_id}: {error}")
             return {"error": error}
         
-        try:
-            # Try to parse as JSON
-            analysis = json.loads(content)
-            
-            # Cache the result
-            if self.config.enable_caching:
-                with open(cache_file, 'w') as f:
-                    json.dump(analysis, f, indent=2)
-            
-            return analysis
-            
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to parse LLM response as JSON: {e}")
-            # Return raw content as fallback
-            return {"raw_content": content, "parse_error": str(e)}
+        # Return the raw text content - no JSON parsing needed
+        analysis = {
+            "chunk_id": chunk.chunk_id,
+            "section": chunk.section,
+            "analysis": content,
+            "token_count": chunk.token_count
+        }
+        
+        # Cache the result
+        if self.config.enable_caching:
+            with open(cache_file, 'w') as f:
+                json.dump(analysis, f, indent=2)
+        
+        return analysis
     
     def consolidate_analyses(self, chunk_analyses: List[Dict[str, Any]], title: str = "", abstract: str = "") -> ExtractedPaperContent:
         """Consolidate analyses from all chunks into final result."""
@@ -619,65 +597,32 @@ Only include information that is explicitly mentioned in the text."""
         
         consolidated = ExtractedPaperContent(title=title, abstract=abstract)
         
-        # Aggregate all findings
-        all_math_formulations = []
-        all_algorithms = []
-        all_hyperparams = {}
-        all_datasets = set()
-        all_metrics = set()
-        all_implementation_notes = []
-        all_insights = []
+        # Combine all analysis text into a comprehensive summary
+        all_analyses = []
+        successful_chunks = 0
+        failed_chunks = 0
         
         for analysis in chunk_analyses:
             if "error" in analysis:
+                failed_chunks += 1
                 continue
             
-            # Mathematical formulations
-            if "mathematical_formulations" in analysis:
-                all_math_formulations.extend(analysis["mathematical_formulations"])
-            
-            # Algorithms
-            if "algorithms" in analysis:
-                all_algorithms.extend(analysis["algorithms"])
-            
-            # Hyperparameters
-            if "hyperparameters" in analysis:
-                all_hyperparams.update(analysis["hyperparameters"])
-            
-            # Datasets
-            if "datasets" in analysis:
-                all_datasets.update(analysis["datasets"])
-            
-            # Metrics
-            if "evaluation_metrics" in analysis:
-                all_metrics.update(analysis["evaluation_metrics"])
-            
-            # Implementation notes
-            if "implementation_notes" in analysis:
-                all_implementation_notes.extend(analysis["implementation_notes"])
-            
-            # Key insights
-            if "key_insights" in analysis:
-                all_insights.extend(analysis["key_insights"])
+            successful_chunks += 1
+            if "analysis" in analysis:
+                section_header = f"\n=== {analysis.get('section', 'Unknown Section')} ===\n"
+                all_analyses.append(section_header + analysis["analysis"])
         
-        # Populate consolidated result
-        consolidated.mathematical_formulations = all_math_formulations
-        consolidated.algorithms = all_algorithms
-        consolidated.hyperparameters = all_hyperparams
-        consolidated.datasets_used = list(all_datasets)
-        consolidated.evaluation_metrics = list(all_metrics)
-        consolidated.implementation_notes = all_implementation_notes
+        # Store the combined analysis as implementation notes
+        if all_analyses:
+            consolidated.implementation_notes = all_analyses
+            consolidated.experimental_setup = "\n\n".join(all_analyses)
         
         # Processing stats
         consolidated.processing_stats = {
             "total_chunks_processed": len(chunk_analyses),
-            "successful_analyses": len([a for a in chunk_analyses if "error" not in a]),
-            "failed_analyses": len([a for a in chunk_analyses if "error" in a]),
-            "total_formulations": len(all_math_formulations),
-            "total_algorithms": len(all_algorithms),
-            "total_hyperparameters": len(all_hyperparams),
-            "total_datasets": len(all_datasets),
-            "total_metrics": len(all_metrics)
+            "successful_analyses": successful_chunks,
+            "failed_analyses": failed_chunks,
+            "extraction_method": "simplified_text_analysis"
         }
         
         return consolidated
