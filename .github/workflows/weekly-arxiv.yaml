@@ -1,49 +1,588 @@
-name: 🐶 Daily Watchdog AI Fetch & Push
+name: 🚀 Weekly ArXiv Paper Implementation Generator
+
 on:
   schedule:
-    - cron: '30 21 * * *'   # 3:00 AM IST == 21:30 UTC
-  workflow_dispatch:        # Manual trigger option
+    # Run every Sunday at 2:00 AM UTC (adjust for your timezone)
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      max_papers:
+        description: 'Maximum number of papers to process'
+        required: false
+        default: '3'
+        type: string
+      specific_domain:
+        description: 'Focus on specific research domain (e.g., nlp, cv, ml)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Run in dry-run mode (no repos created)'
+        required: false
+        default: false
+        type: boolean
+      force_reprocess:
+        description: 'Force reprocess existing papers'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.11'
+  MAX_PAPERS_DEFAULT: 3
+  PROCESSING_TIMEOUT: 180  # 3 hours max
+
 jobs:
-  run-dog-scripts:
+  # Job 1: Fetch and prepare papers
+  fetch-papers:
+    name: 📚 Fetch ArXiv Papers
     runs-on: ubuntu-latest
+    outputs:
+      papers-found: ${{ steps.count-papers.outputs.count }}
+      should-process: ${{ steps.check-papers.outputs.should-process }}
+    
     steps:
-      - name: 📥 Checkout Repository
-        uses: actions/checkout@v4
-      
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      
-      - name: 📦 Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      
-      # Debug step to check environment variables
-      - name: 🔍 Debug Environment Variables
-        run: |
-          echo "Checking environment variables..."
-          echo "API_GITHUB exists: ${{ secrets.API_GITHUB != '' }}"
-          echo "GITHUB_TOKEN will be: ${GITHUB_TOKEN:0:10}..."
-        env:
-          GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
-      
-      - name: ⚙️ Run v3.py
-        run: python v3.py
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
-      
-      - name: 🧠 Run c1.py
-        run: python c1.py
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
-          GITHUB_USERNAME: "Sid7on1"
-      
-      - name: 🚀 Run p1.py
-        run: python p1.py
-        env:
-          GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
-          USERNAME_GITHUB: "Sid7on1"
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.API_GITHUB }}
+        fetch-depth: 0
+    
+    - name: 🐍 Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: 📦 Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: 🔍 Validate Environment
+      run: |
+        echo "🔑 Checking required secrets..."
+        if [ -z "${{ secrets.OPENROUTER_API_KEY }}" ]; then
+          echo "::error::OPENROUTER_API_KEY secret is required"
+          exit 1
+        fi
+        if [ -z "${{ secrets.API_GITHUB }}" ]; then
+          echo "::error::API_GITHUB secret is required"
+          exit 1
+        fi
+        echo "✅ All required secrets are present"
+    
+    - name: 📊 Run Legacy Paper Fetchers (if needed)
+      run: |
+        echo "🔄 Running legacy paper fetching scripts..."
+        
+        # Run v3.py for paper fetching
+        if [ -f "v3.py" ]; then
+          echo "📄 Running v3.py..."
+          python v3.py || echo "⚠️ v3.py failed, continuing..."
+        fi
+        
+        # Run c1.py for paper processing
+        if [ -f "c1.py" ]; then
+          echo "🧠 Running c1.py..."
+          python c1.py || echo "⚠️ c1.py failed, continuing..."
+        fi
+        
+        # Run p1.py for additional processing
+        if [ -f "p1.py" ]; then
+          echo "🚀 Running p1.py..."
+          python p1.py || echo "⚠️ p1.py failed, continuing..."
+        fi
+      env:
+        OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
+        GITHUB_USERNAME: "Sid7on1"
+        USERNAME_GITHUB: "Sid7on1"
+    
+    - name: 📊 Count Available Papers
+      id: count-papers
+      run: |
+        pdf_count=0
+        json_count=0
+        
+        if [ -d "relevant_pdfs" ]; then
+          pdf_count=$(find relevant_pdfs -name "*.pdf" -type f | wc -l)
+        fi
+        
+        if [ -d "relevant_json" ]; then
+          json_count=$(find relevant_json -name "*.json" -type f | wc -l)
+        fi
+        
+        total_count=$((pdf_count + json_count))
+        
+        echo "count=$total_count" >> $GITHUB_OUTPUT
+        echo "pdf_count=$pdf_count" >> $GITHUB_OUTPUT
+        echo "json_count=$json_count" >> $GITHUB_OUTPUT
+        
+        echo "📊 Papers found:"
+        echo "   PDFs: $pdf_count"
+        echo "   JSONs: $json_count"
+        echo "   Total: $total_count"
+    
+    - name: ✅ Check Processing Conditions
+      id: check-papers
+      run: |
+        should_process="false"
+        
+        # Check if we have papers to process
+        if [ "${{ steps.count-papers.outputs.count }}" -gt "0" ]; then
+          should_process="true"
+        fi
+        
+        # Always process on manual trigger
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          should_process="true"
+        fi
+        
+        echo "should-process=$should_process" >> $GITHUB_OUTPUT
+        echo "🎯 Should process papers: $should_process"
+    
+    - name: 📤 Upload Papers for Processing
+      if: steps.check-papers.outputs.should-process == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: papers-to-process
+        path: |
+          relevant_pdfs/
+          relevant_json/
+        retention-days: 1
+
+  # Job 2: Extract content from PDFs
+  extract-content:
+    name: 🔬 Extract Paper Content
+    runs-on: ubuntu-latest
+    needs: fetch-papers
+    if: needs.fetch-papers.outputs.should-process == 'true'
+    timeout-minutes: 90
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        batch: [1, 2]  # Process in 2 batches to avoid timeouts
+    
+    steps:
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v4
+    
+    - name: 🐍 Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: 📦 Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: 📥 Download Papers
+      uses: actions/download-artifact@v4
+      with:
+        name: papers-to-process
+        path: .
+    
+    - name: 🔬 Extract Content from PDFs
+      env:
+        OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        BATCH_NUMBER: ${{ matrix.batch }}
+        MAX_PAPERS: ${{ github.event.inputs.max_papers || env.MAX_PAPERS_DEFAULT }}
+        SPECIFIC_DOMAIN: ${{ github.event.inputs.specific_domain }}
+        FORCE_REPROCESS: ${{ github.event.inputs.force_reprocess }}
+      run: |
+        echo "🔬 Starting content extraction (Batch ${{ matrix.batch }})"
+        
+        # Create necessary directories
+        mkdir -p extraction_cache logs
+        
+        # Calculate papers per batch
+        max_papers=${MAX_PAPERS:-3}
+        papers_per_batch=$((max_papers / 2 + 1))
+        
+        echo "📊 Processing parameters:"
+        echo "   Max papers total: $max_papers"
+        echo "   Papers per batch: $papers_per_batch"
+        echo "   Current batch: $BATCH_NUMBER"
+        echo "   Specific domain: ${SPECIFIC_DOMAIN:-'all'}"
+        echo "   Force reprocess: ${FORCE_REPROCESS:-'false'}"
+        
+        # Process PDFs in this batch
+        processed=0
+        batch_start=$(( (BATCH_NUMBER - 1) * papers_per_batch ))
+        
+        if [ -d "relevant_pdfs" ] && [ "$(ls -A relevant_pdfs/*.pdf 2>/dev/null)" ]; then
+          echo "📄 Processing PDFs..."
+          
+          for pdf in relevant_pdfs/*.pdf; do
+            if [ ! -f "$pdf" ]; then continue; fi
+            
+            # Skip if not in this batch
+            current_index=$(( processed + batch_start ))
+            if [ $processed -ge $papers_per_batch ]; then
+              break
+            fi
+            
+            filename=$(basename "$pdf" .pdf)
+            output_file="relevant_json/${filename}_extracted.json"
+            
+            # Skip if already processed (unless force reprocess)
+            if [ -f "$output_file" ] && [ "$FORCE_REPROCESS" != "true" ]; then
+              echo "⏭️  Skipping $filename (already processed)"
+              continue
+            fi
+            
+            echo "🔍 Processing: $filename"
+            
+            # Run the advanced extractor
+            if python advanced_paper_extractor.py "$pdf" --output "$output_file" --verbose; then
+              echo "✅ Successfully extracted: $filename"
+              processed=$((processed + 1))
+            else
+              echo "❌ Failed to extract: $filename"
+            fi
+            
+            # Rate limiting - wait between papers
+            if [ $processed -lt $papers_per_batch ]; then
+              echo "⏳ Waiting 30 seconds before next paper..."
+              sleep 30
+            fi
+          done
+        else
+          echo "📄 No PDFs found to process"
+        fi
+        
+        echo "📊 Batch $BATCH_NUMBER completed: $processed papers processed"
+    
+    - name: 📤 Upload Extracted Content
+      uses: actions/upload-artifact@v4
+      with:
+        name: extracted-content-batch-${{ matrix.batch }}
+        path: |
+          relevant_json/
+          logs/
+          extraction_cache/
+        retention-days: 7
+
+  # Job 3: Generate repositories
+  generate-repositories:
+    name: 🏗️ Generate GitHub Repositories
+    runs-on: ubuntu-latest
+    needs: [fetch-papers, extract-content]
+    if: needs.fetch-papers.outputs.should-process == 'true'
+    timeout-minutes: ${{ fromJson(env.PROCESSING_TIMEOUT) }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        batch: [1, 2]
+    
+    steps:
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.API_GITHUB }}
+    
+    - name: 🐍 Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: 📦 Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: 📥 Download Extracted Content
+      uses: actions/download-artifact@v4
+      with:
+        name: extracted-content-batch-${{ matrix.batch }}
+        path: .
+    
+    - name: ⚙️ Configure Git
+      run: |
+        git config --global user.name "M1-Evo-Agent[bot]"
+        git config --global user.email "m1-evo-agent@users.noreply.github.com"
+    
+    - name: 🏗️ Generate Repositories
+      env:
+        OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
+        GITHUB_USERNAME: "Sid7on1"
+        GITHUB_ACTIONS: "true"
+        BATCH_NUMBER: ${{ matrix.batch }}
+        DRY_RUN: ${{ github.event.inputs.dry_run }}
+        MAX_PAPERS: ${{ github.event.inputs.max_papers || env.MAX_PAPERS_DEFAULT }}
+      run: |
+        echo "🏗️ Starting repository generation (Batch ${{ matrix.batch }})"
+        
+        # Create necessary directories
+        mkdir -p workspace logs llm_interactions cache
+        
+        # Build command arguments
+        cmd_args="--verbose"
+        
+        if [ "$DRY_RUN" = "true" ]; then
+          cmd_args="$cmd_args --dry-run"
+          echo "🔍 Running in DRY RUN mode - no repositories will be created"
+        fi
+        
+        # Set max papers per batch
+        max_papers=${MAX_PAPERS:-3}
+        papers_per_batch=$((max_papers / 2 + 1))
+        cmd_args="$cmd_args --max-papers $papers_per_batch"
+        
+        echo "🚀 Running M1-Evo Agent with args: $cmd_args"
+        
+        # Run the main agent
+        python fix2.py $cmd_args
+    
+    - name: 📊 Generate Batch Report
+      if: always()
+      run: |
+        echo "## 🏗️ Repository Generation Report (Batch ${{ matrix.batch }})" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f "managed_repos_state.json" ]; then
+          echo "### 📊 Processing Results:" >> $GITHUB_STEP_SUMMARY
+          python -c "
+import json
+import sys
+try:
+    with open('managed_repos_state.json', 'r') as f:
+        data = json.load(f)
+    
+    total = len(data)
+    success = sum(1 for repo in data.values() if repo.get('status') == 'success')
+    failed = sum(1 for repo in data.values() if repo.get('status') == 'failed')
+    
+    print(f'- **Total repositories processed:** {total}')
+    print(f'- **Successfully created:** {success}')
+    print(f'- **Failed:** {failed}')
+    print('')
+    
+    if success > 0:
+        print('### ✅ Successfully Created Repositories:')
+        for name, repo in data.items():
+            if repo.get('status') == 'success':
+                url = repo.get('github_url', 'N/A')
+                print(f'- [{name}]({url})')
+        print('')
+    
+    if failed > 0:
+        print('### ❌ Failed Repositories:')
+        for name, repo in data.items():
+            if repo.get('status') == 'failed':
+                errors = repo.get('errors', [])
+                error_msg = errors[-1] if errors else 'Unknown error'
+                print(f'- **{name}**: {error_msg}')
+        print('')
+        
+except Exception as e:
+    print(f'Error reading state file: {e}')
+" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "No repositories were processed in this batch." >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Add processing stats
+        echo "### 📈 Processing Statistics:" >> $GITHUB_STEP_SUMMARY
+        echo "- **Batch Number:** ${{ matrix.batch }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Dry Run Mode:** ${{ github.event.inputs.dry_run || 'false' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Processing Time:** $(date -u)" >> $GITHUB_STEP_SUMMARY
+    
+    - name: 📤 Upload Generation Results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: generation-results-batch-${{ matrix.batch }}
+        path: |
+          workspace/
+          logs/
+          llm_interactions/
+          managed_repos_state.json
+        retention-days: 30
+
+  # Job 4: Consolidate and report
+  consolidate-results:
+    name: 📋 Consolidate Results
+    runs-on: ubuntu-latest
+    needs: [fetch-papers, extract-content, generate-repositories]
+    if: always() && needs.fetch-papers.outputs.should-process == 'true'
+    
+    steps:
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v4
+    
+    - name: 📥 Download All Results
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts/
+    
+    - name: 📊 Generate Consolidated Report
+      run: |
+        echo "# 🚀 Weekly ArXiv Paper Implementation Report" > WEEKLY_REPORT.md
+        echo "" >> WEEKLY_REPORT.md
+        echo "**Generated:** $(date -u)" >> WEEKLY_REPORT.md
+        echo "**Trigger:** ${{ github.event_name }}" >> WEEKLY_REPORT.md
+        echo "**Papers Found:** ${{ needs.fetch-papers.outputs.papers-found }}" >> WEEKLY_REPORT.md
+        echo "" >> WEEKLY_REPORT.md
+        
+        # Consolidate results from all batches
+        total_repos=0
+        total_success=0
+        total_failed=0
+        successful_repos=()
+        failed_repos=()
+        
+        for batch_dir in artifacts/generation-results-batch-*/; do
+          if [ -f "$batch_dir/managed_repos_state.json" ]; then
+            batch_num=$(echo "$batch_dir" | grep -o 'batch-[0-9]*' | cut -d'-' -f2)
+            echo "## 📦 Batch $batch_num Results" >> WEEKLY_REPORT.md
+            
+            python3 -c "
+import json
+import sys
+import os
+try:
+    with open('$batch_dir/managed_repos_state.json', 'r') as f:
+        data = json.load(f)
+    
+    batch_total = len(data)
+    batch_success = sum(1 for repo in data.values() if repo.get('status') == 'success')
+    batch_failed = sum(1 for repo in data.values() if repo.get('status') == 'failed')
+    
+    print(f'- Repositories processed: {batch_total}')
+    print(f'- Successful: {batch_success}')
+    print(f'- Failed: {batch_failed}')
+    print('')
+    
+    # Save successful repos
+    for name, repo in data.items():
+        if repo.get('status') == 'success':
+            url = repo.get('github_url', 'N/A')
+            with open('successful_repos.txt', 'a') as f:
+                f.write(f'{name}|{url}\n')
+    
+    # Save failed repos
+    for name, repo in data.items():
+        if repo.get('status') == 'failed':
+            errors = repo.get('errors', [])
+            error_msg = errors[-1] if errors else 'Unknown error'
+            with open('failed_repos.txt', 'a') as f:
+                f.write(f'{name}|{error_msg}\n')
+    
+    # Output stats for shell
+    print(f'BATCH_TOTAL={batch_total}', file=sys.stderr)
+    print(f'BATCH_SUCCESS={batch_success}', file=sys.stderr)
+    print(f'BATCH_FAILED={batch_failed}', file=sys.stderr)
+    
+except Exception as e:
+    print(f'Error processing batch: {e}')
+" 2>batch_stats.txt >> WEEKLY_REPORT.md
+            
+            # Read batch stats
+            if [ -f "batch_stats.txt" ]; then
+              source batch_stats.txt 2>/dev/null || true
+              total_repos=$((total_repos + ${BATCH_TOTAL:-0}))
+              total_success=$((total_success + ${BATCH_SUCCESS:-0}))
+              total_failed=$((total_failed + ${BATCH_FAILED:-0}))
+              rm -f batch_stats.txt
+            fi
+          fi
+        done
+        
+        # Overall summary
+        echo "" >> WEEKLY_REPORT.md
+        echo "## 🎯 Overall Summary" >> WEEKLY_REPORT.md
+        echo "- **Total Repositories:** $total_repos" >> WEEKLY_REPORT.md
+        echo "- **Successfully Created:** $total_success" >> WEEKLY_REPORT.md
+        echo "- **Failed:** $total_failed" >> WEEKLY_REPORT.md
+        
+        if [ $total_repos -gt 0 ]; then
+          success_rate=$((total_success * 100 / total_repos))
+          echo "- **Success Rate:** ${success_rate}%" >> WEEKLY_REPORT.md
+        fi
+        
+        # List successful repositories
+        if [ -f "successful_repos.txt" ] && [ -s "successful_repos.txt" ]; then
+          echo "" >> WEEKLY_REPORT.md
+          echo "## ✅ Successfully Created Repositories:" >> WEEKLY_REPORT.md
+          while IFS='|' read -r name url; do
+            echo "- [$name]($url)" >> WEEKLY_REPORT.md
+          done < successful_repos.txt
+        fi
+        
+        # List failed repositories
+        if [ -f "failed_repos.txt" ] && [ -s "failed_repos.txt" ]; then
+          echo "" >> WEEKLY_REPORT.md
+          echo "## ❌ Failed Repositories:" >> WEEKLY_REPORT.md
+          while IFS='|' read -r name error; do
+            echo "- **$name**: $error" >> WEEKLY_REPORT.md
+          done < failed_repos.txt
+        fi
+        
+        echo "" >> WEEKLY_REPORT.md
+        echo "---" >> WEEKLY_REPORT.md
+        echo "*Generated by M1-Evo Maintainer Agent*" >> WEEKLY_REPORT.md
+    
+    - name: 📤 Upload Final Report
+      uses: actions/upload-artifact@v4
+      with:
+        name: weekly-implementation-report
+        path: WEEKLY_REPORT.md
+        retention-days: 90
+    
+    - name: 📊 Display Summary
+      run: |
+        echo "## 🎉 Weekly ArXiv Processing Complete!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        cat WEEKLY_REPORT.md >> $GITHUB_STEP_SUMMARY
+
+  # Job 5: Cleanup old artifacts
+  cleanup:
+    name: 🧹 Cleanup
+    runs-on: ubuntu-latest
+    needs: [consolidate-results]
+    if: always()
+    
+    steps:
+    - name: 🧹 Clean up old artifacts
+      uses: actions/github-script@v7
+      with:
+        script: |
+          // Clean up artifacts older than 30 days
+          const artifacts = await github.rest.actions.listArtifactsForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+          });
+          
+          const thirtyDaysAgo = new Date();
+          thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+          
+          let deletedCount = 0;
+          for (const artifact of artifacts.data.artifacts) {
+            const createdAt = new Date(artifact.created_at);
+            if (createdAt < thirtyDaysAgo && 
+                (artifact.name.includes('papers-to-process') || 
+                 artifact.name.includes('extracted-content') || 
+                 artifact.name.includes('generation-results'))) {
+              console.log(`Deleting old artifact: ${artifact.name}`);
+              await github.rest.actions.deleteArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: artifact.id,
+              });
+              deletedCount++;
+            }
+          }
+          
+          console.log(`Cleaned up ${deletedCount} old artifacts`);
+          
+          // Set output for summary
+          core.summary.addHeading('🧹 Cleanup Complete');
+          core.summary.addRaw(`Deleted ${deletedCount} old artifacts`);
+          await core.summary.write();
