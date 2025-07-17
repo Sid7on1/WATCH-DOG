@@ -71,27 +71,22 @@ jobs:
         fi
         echo "✅ All required secrets are present"
     
-    - name: 📊 Run Legacy Paper Fetchers (if needed)
+    - name: 📚 Fetch and Process ArXiv Papers
       run: |
-        echo "🔄 Running legacy paper fetching scripts..."
+        echo "🚀 Running advanced ArXiv pipeline..."
         
-        # Run v3.py for paper fetching
-        if [ -f "v3.py" ]; then
-          echo "📄 Running v3.py..."
-          python v3.py || echo "⚠️ v3.py failed, continuing..."
-        fi
+        # Set parameters based on inputs
+        DOMAINS="${{ github.event.inputs.specific_domain || 'cs.AI cs.LG cs.CV cs.CL' }}"
+        MAX_PAPERS="${{ github.event.inputs.max_papers || '15' }}"
         
-        # Run c1.py for paper processing
-        if [ -f "c1.py" ]; then
-          echo "🧠 Running c1.py..."
-          python c1.py || echo "⚠️ c1.py failed, continuing..."
-        fi
-        
-        # Run p1.py for additional processing
-        if [ -f "p1.py" ]; then
-          echo "🚀 Running p1.py..."
-          python p1.py || echo "⚠️ p1.py failed, continuing..."
-        fi
+        # Run the complete pipeline
+        python advanced_paper_extractor.py \
+          --arxiv \
+          --domains $DOMAINS \
+          --max-papers $MAX_PAPERS \
+          --delay 8 \
+          --threshold 0.7 \
+          --verbose
       env:
         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
