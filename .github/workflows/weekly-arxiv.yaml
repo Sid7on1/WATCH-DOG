@@ -2,8 +2,7 @@ name: 🚀 Weekly ArXiv Paper Implementation Generator
 
 on:
   schedule:
-    # Run every Sunday at 2:00 AM UTC (adjust for your timezone)
-    - cron: '0 2 * * 0'
+    - cron: '0 2 * * 0'  # Every Sunday at 2:00 AM UTC
   workflow_dispatch:
     inputs:
       max_papers:
@@ -20,25 +19,15 @@ on:
         required: false
         default: false
         type: boolean
-      force_reprocess:
-        description: 'Force reprocess existing papers'
-        required: false
-        default: false
-        type: boolean
 
 env:
   PYTHON_VERSION: '3.11'
-  MAX_PAPERS_DEFAULT: 3
-  PROCESSING_TIMEOUT: 180  # 3 hours max
 
 jobs:
-  # Job 1: Fetch and prepare papers
-  fetch-papers:
-    name: 📚 Fetch ArXiv Papers
+  process-papers:
+    name: 🚀 Process ArXiv Papers
     runs-on: ubuntu-latest
-    outputs:
-      papers-found: ${{ steps.count-papers.outputs.count }}
-      should-process: ${{ steps.check-papers.outputs.should-process }}
+    timeout-minutes: 180
     
     steps:
     - name: 📥 Checkout Repository
@@ -58,9 +47,9 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     
-    - name: 🔍 Validate Environment
+    - name: � Validate Eonvironment
       run: |
-        echo "🔑 Checking required secrets..."
+        echo "Checking required secrets..."
         if [ -z "${{ secrets.OPENROUTER_API_KEY }}" ]; then
           echo "::error::OPENROUTER_API_KEY secret is required"
           exit 1
@@ -69,17 +58,20 @@ jobs:
           echo "::error::API_GITHUB secret is required"
           exit 1
         fi
-        echo "✅ All required secrets are present"
+        echo "All required secrets are present"
     
-    - name: 📚 Fetch and Process ArXiv Papers
+    - name: ⚙️ Configure Git
       run: |
-        echo "🚀 Running advanced ArXiv pipeline..."
+        git config --global user.name "M1-Evo-Agent[bot]"
+        git config --global user.email "m1-evo-agent@users.noreply.github.com"
+    
+    - name: 📚 Fetch and Extract Papers from ArXiv
+      run: |
+        echo "Running ArXiv paper extraction pipeline..."
         
-        # Set parameters based on inputs
         DOMAINS="${{ github.event.inputs.specific_domain || 'cs.AI cs.LG cs.CV cs.CL' }}"
-        MAX_PAPERS="${{ github.event.inputs.max_papers || '15' }}"
+        MAX_PAPERS="${{ github.event.inputs.max_papers || '5' }}"
         
-        # Run the complete pipeline
         python advanced_paper_extractor.py \
           --arxiv \
           --domains $DOMAINS \
@@ -91,362 +83,69 @@ jobs:
         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
         GITHUB_USERNAME: "Sid7on1"
-        USERNAME_GITHUB: "Sid7on1"
-    
-    - name: 📊 Count Available Papers
-      id: count-papers
-      run: |
-        pdf_count=0
-        json_count=0
-        
-        if [ -d "relevant_pdfs" ]; then
-          pdf_count=$(find relevant_pdfs -name "*.pdf" -type f | wc -l)
-        fi
-        
-        if [ -d "relevant_json" ]; then
-          json_count=$(find relevant_json -name "*.json" -type f | wc -l)
-        fi
-        
-        total_count=$((pdf_count + json_count))
-        
-        echo "count=$total_count" >> $GITHUB_OUTPUT
-        echo "pdf_count=$pdf_count" >> $GITHUB_OUTPUT
-        echo "json_count=$json_count" >> $GITHUB_OUTPUT
-        
-        echo "📊 Papers found:"
-        echo "   PDFs: $pdf_count"
-        echo "   JSONs: $json_count"
-        echo "   Total: $total_count"
-    
-    - name: ✅ Check Processing Conditions
-      id: check-papers
-      run: |
-        should_process="false"
-        
-        # Check if we have papers to process
-        if [ "${{ steps.count-papers.outputs.count }}" -gt "0" ]; then
-          should_process="true"
-        fi
-        
-        # Always process on manual trigger
-        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-          should_process="true"
-        fi
-        
-        echo "should-process=$should_process" >> $GITHUB_OUTPUT
-        echo "🎯 Should process papers: $should_process"
-    
-    - name: 📤 Upload Papers for Processing
-      if: steps.check-papers.outputs.should-process == 'true'
-      uses: actions/upload-artifact@v4
-      with:
-        name: papers-to-process
-        path: |
-          relevant_pdfs/
-          relevant_json/
-        retention-days: 1
-
-  # Job 2: Generate repositories (simplified - no separate extraction)
-  generate-repositories:
-    name: 🏗️ Generate GitHub Repositories
-    runs-on: ubuntu-latest
-    needs: fetch-papers
-    if: needs.fetch-papers.outputs.should-process == 'true'
-    timeout-minutes: ${{ fromJson(env.PROCESSING_TIMEOUT) }}
-    
-    strategy:
-      fail-fast: false
-      matrix:
-        batch: [1, 2]
-    
-    steps:
-    - name: 📥 Checkout Repository
-      uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.API_GITHUB }}
-    
-    - name: 🐍 Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-        cache: 'pip'
-    
-    - name: 📦 Install Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-    
-    - name: 📥 Download Papers
-      uses: actions/download-artifact@v4
-      with:
-        name: papers-to-process
-        path: .
-    
-    - name: ⚙️ Configure Git
-      run: |
-        git config --global user.name "M1-Evo-Agent[bot]"
-        git config --global user.email "m1-evo-agent@users.noreply.github.com"
     
     - name: 🏗️ Generate Repositories with Dual Saving
+      run: |
+        echo "Generating repositories with dual saving..."
+        echo "Individual repos + WATCHDOG_memory backups"
+        
+        CMD_ARGS="--verbose"
+        
+        if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+          CMD_ARGS="$CMD_ARGS --dry-run"
+          echo "Running in DRY RUN mode"
+        fi
+        
+        MAX_PAPERS="${{ github.event.inputs.max_papers || '3' }}"
+        CMD_ARGS="$CMD_ARGS --max-papers $MAX_PAPERS"
+        
+        echo "Running: python fix2.py $CMD_ARGS"
+        python fix2.py $CMD_ARGS
       env:
         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
         GITHUB_USERNAME: "Sid7on1"
         GITHUB_ACTIONS: "true"
-        BATCH_NUMBER: ${{ matrix.batch }}
-        DRY_RUN: ${{ github.event.inputs.dry_run }}
-        MAX_PAPERS: ${{ github.event.inputs.max_papers || env.MAX_PAPERS_DEFAULT }}
-      run: |
-        echo "🏗️ Starting dual repository generation (Batch ${{ matrix.batch }})"
-        echo "✅ Individual repos + 💾 WATCHDOG_memory backups"
-        
-        # Create necessary directories
-        mkdir -p workspace logs llm_interactions cache
-        
-        # Build command arguments
-        cmd_args="--verbose"
-        
-        if [ "$DRY_RUN" = "true" ]; then
-          cmd_args="$cmd_args --dry-run"
-          echo "🔍 Running in DRY RUN mode - no repositories will be created"
-        fi
-        
-        # Set max papers per batch
-        max_papers=${MAX_PAPERS:-3}
-        papers_per_batch=$((max_papers / 2 + 1))
-        cmd_args="$cmd_args --max-papers $papers_per_batch"
-        
-        echo "🚀 Running M1-Evo Agent with args: $cmd_args"
-        echo "📊 Processing up to $papers_per_batch papers in batch ${{ matrix.batch }}"
-        
-        # Run the main agent (creates individual repos + WATCHDOG_memory backups)
-        python fix2.py $cmd_args
     
-    - name: 📊 Generate Batch Report
+    - name: 📊 Upload Results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: processing-results
+        path: |
+          logs/
+          workspace/
+          managed_repos_state.json
+          relevant_json/
+          relevant_pdfs/
+        retention-days: 30
+    
+    - name: 📋 Generate Summary Report
       if: always()
       run: |
-        echo "## 🏗️ Dual Repository Generation Report (Batch ${{ matrix.batch }})" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Generating execution summary..."
         
         if [ -f "managed_repos_state.json" ]; then
-          echo "### 📊 Processing Results:" >> $GITHUB_STEP_SUMMARY
-          
-          # Use a separate Python script to avoid YAML issues
-          cat > process_results.py << 'EOF'
-import json
-import sys
-
-try:
-    with open('managed_repos_state.json', 'r') as f:
-        data = json.load(f)
-    
-    total = len(data)
-    success = sum(1 for repo in data.values() if repo.get('status') == 'success')
-    failed = sum(1 for repo in data.values() if repo.get('status') == 'failed')
-    
-    print(f'- **Total repositories processed:** {total}')
-    print(f'- **Individual repos created:** {success}')
-    print(f'- **WATCHDOG_memory backups:** {success}')
-    print(f'- **Failed:** {failed}')
-    print('')
-    
-    if success > 0:
-        print('### ✅ Successfully Created (Individual + WATCHDOG_memory):')
-        for name, repo in data.items():
-            if repo.get('status') == 'success':
-                url = repo.get('github_url', 'N/A')
-                print(f'- **Individual**: [{name}]({url})')
-                print(f'- **WATCHDOG Backup**: projects/{name}/')
-        print('')
-    
-    if failed > 0:
-        print('### ❌ Failed Repositories:')
-        for name, repo in data.items():
-            if repo.get('status') == 'failed':
-                errors = repo.get('errors', [])
-                error_msg = errors[-1] if errors else 'Unknown error'
-                print(f'- **{name}**: {error_msg}')
-        print('')
-        
-except Exception as e:
-    print(f'Error reading state file: {e}')
-EOF
-          
-          python process_results.py >> $GITHUB_STEP_SUMMARY
+          echo "Repository processing completed"
+          echo "State file found: managed_repos_state.json"
         else
-          echo "No repositories were processed in this batch." >> $GITHUB_STEP_SUMMARY
+          echo "No state file found - check logs for details"
         fi
         
-        # Add processing stats
-        echo "### 📈 Processing Statistics:" >> $GITHUB_STEP_SUMMARY
-        echo "- **Batch Number:** ${{ matrix.batch }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Dual Saving:** Individual repos + WATCHDOG_memory backups" >> $GITHUB_STEP_SUMMARY
-        echo "- **Dry Run Mode:** ${{ github.event.inputs.dry_run || 'false' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Processing Time:** $(date -u)" >> $GITHUB_STEP_SUMMARY
+        echo "Processing completed at: $(date -u)"
     
-    - name: 📤 Upload Generation Results
+    - name: 🧹 Cleanup Temporary Files
       if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: generation-results-batch-${{ matrix.batch }}
-        path: |
-          workspace/
-          logs/
-          llm_interactions/
-          managed_repos_state.json
-        retention-days: 30
-
-  # Job 3: Consolidate and report
-  consolidate-results:
-    name: 📋 Consolidate Results
-    runs-on: ubuntu-latest
-    needs: [fetch-papers, generate-repositories]
-    if: always() && needs.fetch-papers.outputs.should-process == 'true'
-    
-    steps:
-    - name: 📥 Checkout Repository
-      uses: actions/checkout@v4
-    
-    - name: �  Download All Results
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts/
-    
-    - name: 📊 Generate Consolidated Report
       run: |
-        echo "# 🚀 Weekly ArXiv Paper Implementation Report" > WEEKLY_REPORT.md
-        echo "" >> WEEKLY_REPORT.md
-        echo "**Generated:** $(date -u)" >> WEEKLY_REPORT.md
-        echo "**Trigger:** ${{ github.event_name }}" >> WEEKLY_REPORT.md
-        echo "**Papers Found:** ${{ needs.fetch-papers.outputs.papers-found }}" >> WEEKLY_REPORT.md
-        echo "**Dual Saving:** Individual repositories + WATCHDOG_memory backups" >> WEEKLY_REPORT.md
-        echo "" >> WEEKLY_REPORT.md
-        
-        # Create consolidation script
-        cat > consolidate.py << 'EOF'
-import json
-import os
-import sys
+        echo "Cleaning up temporary files..."
+        rm -rf extraction_cache/ || true
+        rm -rf __pycache__/ || true
+        echo "Cleanup completed"
 
-total_repos = 0
-total_success = 0
-total_failed = 0
-
-# Process each batch
-for batch_dir in os.listdir('artifacts'):
-    if batch_dir.startswith('generation-results-batch-'):
-        state_file = os.path.join('artifacts', batch_dir, 'managed_repos_state.json')
-        if os.path.exists(state_file):
-            batch_num = batch_dir.split('-')[-1]
-            print(f"## 📦 Batch {batch_num} Results")
-            
-            try:
-                with open(state_file, 'r') as f:
-                    data = json.load(f)
-                
-                batch_total = len(data)
-                batch_success = sum(1 for repo in data.values() if repo.get('status') == 'success')
-                batch_failed = sum(1 for repo in data.values() if repo.get('status') == 'failed')
-                
-                print(f'- Repositories processed: {batch_total}')
-                print(f'- Individual repos created: {batch_success}')
-                print(f'- WATCHDOG_memory backups: {batch_success}')
-                print(f'- Failed: {batch_failed}')
-                print('')
-                
-                # Save successful repos
-                for name, repo in data.items():
-                    if repo.get('status') == 'success':
-                        url = repo.get('github_url', 'N/A')
-                        with open('successful_repos.txt', 'a') as f:
-                            f.write(f'{name}|{url}\n')
-                
-                # Save failed repos
-                for name, repo in data.items():
-                    if repo.get('status') == 'failed':
-                        errors = repo.get('errors', [])
-                        error_msg = errors[-1] if errors else 'Unknown error'
-                        with open('failed_repos.txt', 'a') as f:
-                            f.write(f'{name}|{error_msg}\n')
-                
-                total_repos += batch_total
-                total_success += batch_success
-                total_failed += batch_failed
-                
-            except Exception as e:
-                print(f'Error processing batch: {e}')
-
-# Print totals for shell script
-print(f"TOTAL_REPOS={total_repos}", file=sys.stderr)
-print(f"TOTAL_SUCCESS={total_success}", file=sys.stderr)
-print(f"TOTAL_FAILED={total_failed}", file=sys.stderr)
-EOF
-        
-        # Run consolidation
-        python consolidate.py 2>totals.txt >> WEEKLY_REPORT.md
-        
-        # Read totals
-        if [ -f "totals.txt" ]; then
-          source totals.txt 2>/dev/null || true
-        fi
-        
-        # Overall summary
-        echo "" >> WEEKLY_REPORT.md
-        echo "## 🎯 Overall Summary" >> WEEKLY_REPORT.md
-        echo "- **Total Repositories:** ${TOTAL_REPOS:-0}" >> WEEKLY_REPORT.md
-        echo "- **Individual Repos Created:** ${TOTAL_SUCCESS:-0}" >> WEEKLY_REPORT.md
-        echo "- **WATCHDOG_memory Backups:** ${TOTAL_SUCCESS:-0}" >> WEEKLY_REPORT.md
-        echo "- **Failed:** ${TOTAL_FAILED:-0}" >> WEEKLY_REPORT.md
-        
-        if [ "${TOTAL_REPOS:-0}" -gt 0 ]; then
-          success_rate=$(( TOTAL_SUCCESS * 100 / TOTAL_REPOS ))
-          echo "- **Success Rate:** ${success_rate}%" >> WEEKLY_REPORT.md
-        fi
-        
-        # List successful repositories
-        if [ -f "successful_repos.txt" ] && [ -s "successful_repos.txt" ]; then
-          echo "" >> WEEKLY_REPORT.md
-          echo "## ✅ Successfully Created:" >> WEEKLY_REPORT.md
-          echo "" >> WEEKLY_REPORT.md
-          while IFS='|' read -r name url; do
-            echo "### 📁 $name" >> WEEKLY_REPORT.md
-            echo "- **Individual Repository**: [$name]($url)" >> WEEKLY_REPORT.md
-            echo "- **WATCHDOG_memory Backup**: \`projects/$name/\`" >> WEEKLY_REPORT.md
-            echo "" >> WEEKLY_REPORT.md
-          done < successful_repos.txt
-        fi
-        
-        # List failed repositories
-        if [ -f "failed_repos.txt" ] && [ -s "failed_repos.txt" ]; then
-          echo "" >> WEEKLY_REPORT.md
-          echo "## ❌ Failed Repositories:" >> WEEKLY_REPORT.md
-          while IFS='|' read -r name error; do
-            echo "- **$name**: $error" >> WEEKLY_REPORT.md
-          done < failed_repos.txt
-        fi
-        
-        echo "" >> WEEKLY_REPORT.md
-        echo "---" >> WEEKLY_REPORT.md
-        echo "*Generated by M1-Evo Maintainer Agent with Dual Saving*" >> WEEKLY_REPORT.md
-    
-    - name: 📤 Upload Final Report
-      uses: actions/upload-artifact@v4
-      with:
-        name: weekly-implementation-report
-        path: WEEKLY_REPORT.md
-        retention-days: 90
-    
-    - name: 📊 Display Summary
-      run: |
-        echo "## 🎉 Weekly ArXiv Processing Complete!" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        cat WEEKLY_REPORT.md >> $GITHUB_STEP_SUMMARY
-
-  # Job 4: Cleanup old artifacts
-  cleanup:
-    name: 🧹 Cleanup
+  cleanup-artifacts:
+    name: 🧹 Cleanup Old Artifacts
     runs-on: ubuntu-latest
-    needs: [consolidate-results]
+    needs: [process-papers]
     if: always()
     
     steps:
@@ -454,7 +153,6 @@ EOF
       uses: actions/github-script@v7
       with:
         script: |
-          // Clean up artifacts older than 30 days
           const artifacts = await github.rest.actions.listArtifactsForRepo({
             owner: context.repo.owner,
             repo: context.repo.repo,
@@ -466,10 +164,7 @@ EOF
           let deletedCount = 0;
           for (const artifact of artifacts.data.artifacts) {
             const createdAt = new Date(artifact.created_at);
-            if (createdAt < thirtyDaysAgo && 
-                (artifact.name.includes('papers-to-process') || 
-                 artifact.name.includes('extracted-content') || 
-                 artifact.name.includes('generation-results'))) {
+            if (createdAt < thirtyDaysAgo) {
               console.log(`Deleting old artifact: ${artifact.name}`);
               await github.rest.actions.deleteArtifact({
                 owner: context.repo.owner,
@@ -481,8 +176,3 @@ EOF
           }
           
           console.log(`Cleaned up ${deletedCount} old artifacts`);
-          
-          // Set output for summary
-          core.summary.addHeading('🧹 Cleanup Complete');
-          core.summary.addRaw(`Deleted ${deletedCount} old artifacts`);
-          await core.summary.write();
