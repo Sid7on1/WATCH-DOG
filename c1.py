@@ -2969,6 +2969,165 @@ class Advanced360RepositoryGenerator:
         return unique_files
 
 
+class DependencyManager:
+    """Manages Python dependencies for generated projects."""
+    
+    def __init__(self, config: Config, logger: logging.Logger):
+        self.config = config
+        self.logger = logger
+        
+        # Common package mappings for import -> package name
+        self.import_to_package = {
+            'torch': 'torch>=2.0.0',
+            'torchvision': 'torchvision>=0.15.0',
+            'transformers': 'transformers>=4.30.0',
+            'numpy': 'numpy>=1.24.0',
+            'pandas': 'pandas>=2.0.0',
+            'matplotlib': 'matplotlib>=3.7.0',
+            'seaborn': 'seaborn>=0.12.0',
+            'sklearn': 'scikit-learn>=1.3.0',
+            'cv2': 'opencv-python>=4.8.0',
+            'PIL': 'Pillow>=10.0.0',
+            'requests': 'requests>=2.31.0',
+            'aiohttp': 'aiohttp>=3.8.0',
+            'fastapi': 'fastapi>=0.100.0',
+            'uvicorn': 'uvicorn>=0.23.0',
+            'streamlit': 'streamlit>=1.25.0',
+            'gradio': 'gradio>=3.40.0',
+            'flask': 'Flask>=2.3.0',
+            'pydantic': 'pydantic>=2.0.0',
+            'pytest': 'pytest>=7.4.0',
+            'jupyter': 'jupyter>=1.0.0',
+            'tqdm': 'tqdm>=4.65.0',
+            'wandb': 'wandb>=0.15.0',
+            'mlflow': 'mlflow>=2.5.0',
+            'yaml': 'PyYAML>=6.0',
+            'dotenv': 'python-dotenv>=1.0.0',
+            'click': 'click>=8.1.0',
+            'rich': 'rich>=13.5.0',
+            'boto3': 'boto3>=1.28.0',
+            'redis': 'redis>=4.6.0',
+            'docker': 'docker>=6.1.0',
+            'jinja2': 'Jinja2>=3.1.0',
+            'jsonschema': 'jsonschema>=4.19.0',
+            'lightning': 'pytorch-lightning>=2.0.0',
+            'datasets': 'datasets>=2.14.0',
+            'tokenizers': 'tokenizers>=0.13.0',
+            'spacy': 'spacy>=3.6.0',
+            'nltk': 'nltk>=3.8.0',
+            'networkx': 'networkx>=3.1.0',
+            'scipy': 'scipy>=1.11.0',
+            'plotly': 'plotly>=5.15.0',
+            'dash': 'dash>=2.12.0'
+        }
+        
+        # Base dependencies that are almost always needed
+        self.base_dependencies = {
+            'numpy>=1.24.0',
+            'python-dotenv>=1.0.0',
+            'PyYAML>=6.0',
+            'requests>=2.31.0',
+            'tqdm>=4.65.0',
+            'typing-extensions>=4.7.0'
+        }
+
+    def extract_imports_from_content(self, content: str) -> Set[str]:
+        """Extract import statements from Python code content."""
+        imports = set()
+        
+        # Regular expressions for different import patterns
+        import_patterns = [
+            r'^import\s+([a-zA-Z_][a-zA-Z0-9_]*)',
+            r'^from\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+import',
+            r'^\s*import\s+([a-zA-Z_][a-zA-Z0-9_]*)',
+            r'^\s*from\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+import'
+        ]
+        
+        lines = content.split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+                
+            for pattern in import_patterns:
+                match = re.match(pattern, line)
+                if match:
+                    module = match.group(1)
+                    # Handle submodules (e.g., torch.nn -> torch)
+                    base_module = module.split('.')[0]
+                    imports.add(base_module)
+                    break
+        
+        return imports
+
+    def generate_requirements(self, files_content: Dict[str, str], paper: PaperInfo) -> Tuple[str, str]:
+        """Generate requirements.txt content based on detected imports."""
+        all_imports = set()
+        
+        # Extract imports from all Python files
+        for file_path, content in files_content.items():
+            if file_path.endswith('.py'):
+                file_imports = self.extract_imports_from_content(content)
+                all_imports.update(file_imports)
+        
+        # Convert imports to package requirements
+        requirements = set(self.base_dependencies)
+        
+        for import_name in all_imports:
+            if import_name in self.import_to_package:
+                requirements.add(self.import_to_package[import_name])
+            elif import_name not in ['os', 'sys', 'json', 're', 'time', 'datetime', 
+                                   'pathlib', 'logging', 'asyncio', 'subprocess', 
+                                   'tempfile', 'hashlib', 'base64', 'math', 'random', 
+                                   'string', 'enum', 'dataclasses', 'typing', 'abc', 
+                                   'concurrent', 'zipfile', 'urllib', 'mimetypes',
+                                   'collections', 'itertools', 'functools', 'operator',
+                                   'copy', 'pickle', 'csv', 'sqlite3', 'threading',
+                                   'multiprocessing', 'queue', 'socket', 'ssl', 'email',
+                                   'html', 'xml', 'http', 'unittest', 'argparse', 'configparser']:
+                # Add unknown third-party packages with generic version
+                requirements.add(f"{import_name}>=0.1.0")
+        
+        # Add paper-specific requirements based on research domain
+        if hasattr(paper, 'research_domain') and paper.research_domain:
+            domain = paper.research_domain.lower()
+            if 'nlp' in domain or 'language' in domain or 'text' in domain:
+                requirements.update({
+                    'transformers>=4.30.0',
+                    'tokenizers>=0.13.0',
+                    'datasets>=2.14.0'
+                })
+            elif 'vision' in domain or 'image' in domain or 'cv' in domain:
+                requirements.update({
+                    'torchvision>=0.15.0',
+                    'opencv-python>=4.8.0',
+                    'Pillow>=10.0.0'
+                })
+        
+        # Sort requirements for consistency
+        sorted_requirements = sorted(list(requirements))
+        
+        # Generate main requirements.txt
+        main_requirements = '\n'.join(sorted_requirements)
+        
+        # Generate requirements-dev.txt
+        dev_requirements = '\n'.join([
+            '# Development dependencies',
+            '-r requirements.txt',
+            '',
+            '# Testing and Quality',
+            'pytest>=7.4.0',
+            'pytest-cov>=4.1.0',
+            'black>=23.7.0',
+            'flake8>=6.0.0',
+            'mypy>=1.5.0',
+            'pre-commit>=3.3.0',
+            'bandit>=1.7.0'
+        ])
+        
+        return main_requirements, dev_requirements
+
+
 class QualityAssuranceEngine:
     """Advanced quality assurance for generated code."""
     
@@ -2976,6 +3135,7 @@ class QualityAssuranceEngine:
         self.config = config
         self.llm = llm_interface
         self.logger = logger
+        self.dependency_manager = DependencyManager(config, logger)
     
     async def assess_code_quality(self, file_path: str, content: str, file_plan: FilePlan) -> QualityReport:
         """Comprehensive code quality assessment."""
@@ -3025,7 +3185,7 @@ class QualityAssuranceEngine:
         )
     
     def _static_analysis(self, content: str, file_plan: FilePlan) -> Tuple[float, List[str]]:
-        """Static code analysis."""
+        """Enhanced static code analysis with professional tools integration."""
         issues = []
         score = 1.0
         
@@ -3035,36 +3195,210 @@ class QualityAssuranceEngine:
         except SyntaxError as e:
             issues.append(f"Syntax error: {e}")
             score -= 0.5
+            return max(score, 0.0), issues  # Return early if syntax error
         
-        # Check for common code smells
+        # Try to use professional static analysis tools
+        temp_file_path = None
+        try:
+            # Write content to temporary file for analysis
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as temp_file:
+                temp_file.write(content)
+                temp_file_path = temp_file.name
+            
+            # Run flake8 for style and error checking
+            try:
+                result = subprocess.run(
+                    ['flake8', '--max-line-length=100', '--ignore=E203,W503,E501', temp_file_path],
+                    capture_output=True, text=True, timeout=30
+                )
+                if result.returncode != 0 and result.stdout.strip():
+                    flake8_issues = [line for line in result.stdout.strip().split('\n') if line.strip()]
+                    for issue in flake8_issues[:5]:  # Limit to first 5 issues
+                        issue_parts = issue.split(':', 3)
+                        if len(issue_parts) >= 4:
+                            issues.append(f"Style: {issue_parts[3].strip()}")
+                    score -= min(0.3, len(flake8_issues) * 0.05)
+            except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError):
+                self.logger.debug("Flake8 not available, using basic style checks")
+            
+            # Run bandit for security analysis (only for non-test files)
+            if not file_plan.path.startswith('tests/'):
+                try:
+                    result = subprocess.run(
+                        ['bandit', '-f', 'json', '-ll', temp_file_path],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    if result.stdout.strip():
+                        try:
+                            bandit_data = json.loads(result.stdout)
+                            security_issues = bandit_data.get('results', [])
+                            for issue in security_issues[:3]:  # Limit to first 3 security issues
+                                severity = issue.get('issue_severity', 'MEDIUM')
+                                test_name = issue.get('test_name', 'Unknown')
+                                issues.append(f"Security ({severity}): {test_name}")
+                            if security_issues:
+                                score -= min(0.4, len(security_issues) * 0.1)
+                        except json.JSONDecodeError:
+                            pass
+                except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError):
+                    self.logger.debug("Bandit not available, skipping security analysis")
+            
+        except Exception as e:
+            self.logger.warning(f"Professional static analysis failed: {e}")
+        finally:
+            # Clean up temp file
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                except OSError:
+                    pass
+        
+        # Enhanced manual analysis as fallback/supplement
         lines = content.split('\n')
         
-        # Long functions
+        # Function complexity and length analysis
         in_function = False
         function_lines = 0
+        current_function_name = ""
+        complexity_score = 0
+        
         for line in lines:
-            if line.strip().startswith('def '):
+            stripped = line.strip()
+            if stripped.startswith('def '):
+                # Check previous function
+                if in_function and function_lines > 50:
+                    issues.append(f"Function '{current_function_name}' too long ({function_lines} lines)")
+                    score -= 0.1
+                if complexity_score > 10:
+                    issues.append(f"Function '{current_function_name}' too complex (complexity: {complexity_score})")
+                    score -= 0.15
+                
+                # Start new function
                 in_function = True
                 function_lines = 0
-            elif in_function and (line.startswith('def ') or line.startswith('class ')):
-                if function_lines > 50:
-                    issues.append("Function too long (>50 lines)")
-                    score -= 0.1
-                in_function = line.strip().startswith('def ')
-                function_lines = 0
+                complexity_score = 1
+                try:
+                    current_function_name = stripped.split('(')[0].replace('def ', '').strip()
+                except:
+                    current_function_name = "unknown"
+                    
             elif in_function:
-                function_lines += 1
+                if stripped.startswith(('def ', 'class ')):
+                    # End of current function
+                    in_function = stripped.startswith('def ')
+                    if not in_function:
+                        continue
+                else:
+                    function_lines += 1
+                    # Simple complexity calculation
+                    complexity_keywords = ['if ', 'elif ', 'for ', 'while ', 'except ', 'with ', 'and ', 'or ']
+                    complexity_score += sum(1 for keyword in complexity_keywords if keyword in stripped)
         
-        # Missing docstrings
-        if file_plan.file_type == "code" and '"""' not in content and "'''" not in content:
-            issues.append("Missing docstrings")
-            score -= 0.2
+        # Check final function
+        if in_function and function_lines > 50:
+            issues.append(f"Function '{current_function_name}' too long ({function_lines} lines)")
+            score -= 0.1
         
-        # TODO/FIXME comments
-        todo_count = content.count('TODO') + content.count('FIXME')
+        # Import analysis
+        import_lines = []
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith(('import ', 'from ')):
+                import_lines.append((i, stripped))
+        
+        if import_lines:
+            # Check for unused imports (basic check)
+            imported_modules = set()
+            for _, import_line in import_lines:
+                if import_line.startswith('import '):
+                    modules = import_line.replace('import ', '').split(',')
+                    for module in modules:
+                        imported_modules.add(module.strip().split(' as ')[0])
+                elif import_line.startswith('from '):
+                    parts = import_line.split()
+                    if len(parts) >= 4:  # from module import something
+                        imports = ' '.join(parts[3:]).split(',')
+                        for imp in imports:
+                            imported_modules.add(imp.strip().split(' as ')[0])
+            
+            # Simple unused import detection
+            content_without_imports = '\n'.join([line for i, line in enumerate(lines) 
+                                               if not lines[i].strip().startswith(('import ', 'from '))])
+            potentially_unused = []
+            for module in imported_modules:
+                if module not in content_without_imports and len(module) > 2:
+                    potentially_unused.append(module)
+            
+            if potentially_unused and len(potentially_unused) <= 3:  # Only report if reasonable number
+                issues.append(f"Potentially unused imports: {', '.join(potentially_unused[:3])}")
+                score -= 0.05
+        
+        # Documentation coverage analysis
+        if file_plan.file_type == "code":
+            function_defs = [line for line in lines if line.strip().startswith('def ')]
+            class_defs = [line for line in lines if line.strip().startswith('class ')]
+            
+            # Count docstrings more accurately
+            docstring_count = 0
+            in_docstring = False
+            docstring_char = None
+            
+            for line in lines:
+                stripped = line.strip()
+                if not in_docstring:
+                    if '"""' in stripped:
+                        docstring_char = '"""'
+                        if stripped.count('"""') == 2:  # Single line docstring
+                            docstring_count += 1
+                        else:
+                            in_docstring = True
+                    elif "'''" in stripped:
+                        docstring_char = "'''"
+                        if stripped.count("'''") == 2:  # Single line docstring
+                            docstring_count += 1
+                        else:
+                            in_docstring = True
+                else:
+                    if docstring_char in stripped:
+                        docstring_count += 1
+                        in_docstring = False
+                        docstring_char = None
+            
+            total_definitions = len(function_defs) + len(class_defs)
+            if total_definitions > 0:
+                doc_coverage = docstring_count / total_definitions
+                if doc_coverage < 0.6:
+                    issues.append(f"Low documentation coverage: {doc_coverage:.1%} ({docstring_count}/{total_definitions})")
+                    score -= 0.2 * (0.6 - doc_coverage)
+        
+        # Type hints coverage
+        if file_plan.file_type == "code":
+            function_lines = [line for line in lines if line.strip().startswith('def ')]
+            typed_functions = []
+            for line in function_lines:
+                if '->' in line or any(': ' in param for param in line.split('(')[1].split(')')[0].split(',')):
+                    typed_functions.append(line)
+            
+            if function_lines:
+                type_coverage = len(typed_functions) / len(function_lines)
+                if type_coverage < 0.4:
+                    issues.append(f"Low type hints coverage: {type_coverage:.1%}")
+                    score -= 0.1
+        
+        # Code quality indicators
+        quality_issues = []
+        todo_count = content.count('TODO') + content.count('FIXME') + content.count('XXX')
         if todo_count > 0:
-            issues.append(f"Contains {todo_count} TODO/FIXME comments")
-            score -= 0.1 * min(todo_count, 5)
+            quality_issues.append(f"{todo_count} TODO/FIXME comments")
+            score -= 0.05 * min(todo_count, 5)
+        
+        # Check for code smells
+        if 'print(' in content and file_plan.file_type == "code" and not file_plan.path.startswith('examples/'):
+            quality_issues.append("Contains print statements (consider using logging)")
+            score -= 0.05
+        
+        if quality_issues:
+            issues.append("Code quality: " + ", ".join(quality_issues))
         
         return max(score, 0.0), issues
     
