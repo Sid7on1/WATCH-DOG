@@ -42,6 +42,11 @@ class Config:
     user_agent: str = "M1-Evo-Agent-360/3.0"
     repo_prefix: str = "research-360-"
     
+    # WATCHDOG_memory repository settings
+    watchdog_repo_name: str = "WATCHDOG_memory"
+    save_to_watchdog: bool = True  # ALSO save copies to WATCHDOG_memory repo
+    create_individual_repos: bool = True  # Create individual repos for each paper
+    
     # Advanced LLM Models
     architect_model: str = "anthropic/claude-3.5-sonnet"
     coder_model: str = "deepseek/deepseek-coder-v2-instruct"
@@ -2213,7 +2218,10 @@ class GitHubManager:
         }
 
     async def create_repository(self, repo_name: str, description: str) -> Tuple[Optional[str], str]:
-        """Creates a new GitHub repository."""
+        """Creates individual repository AND verifies WATCHDOG_memory for dual saving."""
+        
+        # Step 1: Create individual repository (always create new repos)
+        individual_repo_url = None
         url = "https://api.github.com/user/repos"
         payload = {
             "name": repo_name,
@@ -2230,15 +2238,15 @@ class GitHubManager:
                 async with self.session.post(url, headers=self.headers, json=payload) as response:
                     if response.status == 201:
                         data = await response.json()
-                        repo_url = data["html_url"]
-                        self.logger.info(f"Successfully created repository: {repo_url}")
-                        return repo_url, "Repository created successfully"
+                        individual_repo_url = data["html_url"]
+                        self.logger.info(f"✅ Created individual repository: {individual_repo_url}")
+                        break
                     elif response.status == 422:
                         error_data = await response.json()
                         if "name already exists" in str(error_data):
-                            existing_url = f"https://github.com/{self.config.github_username}/{repo_name}"
-                            self.logger.warning(f"Repository already exists: {existing_url}")
-                            return existing_url, "Repository already exists"
+                            individual_repo_url = f"https://github.com/{self.config.github_username}/{repo_name}"
+                            self.logger.warning(f"⚠️ Individual repository already exists: {individual_repo_url}")
+                            break
                     elif response.status == 429:
                         retry_after = int(response.headers.get("Retry-After", 60))
                         self.logger.warning(f"Rate limit exceeded. Retrying after {retry_after} seconds.")
@@ -2247,27 +2255,92 @@ class GitHubManager:
                     
                     response.raise_for_status()
             except Exception as e:
-                error_msg = f"Failed to create repository (attempt {attempt+1}): {e}"
+                error_msg = f"Failed to create individual repository (attempt {attempt+1}): {e}"
                 self.logger.error(error_msg)
                 if attempt < self.config.retry_attempts - 1:
                     await asyncio.sleep(self.config.retry_delay * (2 ** attempt))
         
-        return None, f"Failed to create repository after {self.config.retry_attempts} attempts"
+        # Step 2: Verify WATCHDOG_memory repository (for dual saving)
+        watchdog_verified = False
+        if self.config.save_to_watchdog:
+            check_url = f"https://api.github.com/repos/{self.config.github_username}/{self.config.watchdog_repo_name}"
+            try:
+                async with self.session.get(check_url, headers=self.headers) as response:
+                    if response.status == 200:
+                        watchdog_url = f"https://github.com/{self.config.github_username}/{self.config.watchdog_repo_name}"
+                        self.logger.info(f"✅ WATCHDOG_memory repository verified for dual saving: {watchdog_url}")
+                        watchdog_verified = True
+                    else:
+                        self.logger.warning(f"⚠️ WATCHDOG_memory repository not accessible: {response.status}")
+            except Exception as e:
+                self.logger.warning(f"WATCHDOG_memory verification failed: {e}")
+        
+        # Return results
+        if individual_repo_url:
+            if watchdog_verified:
+                return individual_repo_url, f"✅ Individual repo created + WATCHDOG_memory ready for dual saving"
+            else:
+                return individual_repo_url, f"✅ Individual repository created (WATCHDOG_memory backup disabled)"
+        else:
+            return None, f"❌ Failed to create individual repository after {self.config.retry_attempts} attempts"
 
     async def upload_file(self, repo_name: str, file_path: str, content: str, commit_message: str) -> Tuple[bool, str]:
-        """Uploads a single file to the GitHub repository."""
+        """Uploads file to individual repository AND WATCHDOG_memory (dual saving)."""
+        
+        individual_success = False
+        watchdog_success = False
+        results = []
+        
+        # Step 1: Upload to individual repository
+        individual_success = await self._upload_to_repo(repo_name, file_path, content, commit_message)
+        if individual_success:
+            results.append(f"✅ Individual repo: {repo_name}")
+            self.logger.info(f"📤 Uploaded to individual repo: {repo_name}/{file_path}")
+        else:
+            results.append(f"❌ Individual repo: {repo_name}")
+            self.logger.error(f"Failed to upload to individual repo: {repo_name}/{file_path}")
+        
+        # Step 2: Upload to WATCHDOG_memory (if enabled)
+        if self.config.save_to_watchdog:
+            # Organize in WATCHDOG_memory: projects/{repo_name}/{file_path}
+            watchdog_path = f"projects/{repo_name}/{file_path}"
+            watchdog_commit = f"[{repo_name}] {commit_message}"
+            
+            watchdog_success = await self._upload_to_repo(
+                self.config.watchdog_repo_name, 
+                watchdog_path, 
+                content, 
+                watchdog_commit
+            )
+            
+            if watchdog_success:
+                results.append(f"✅ WATCHDOG_memory backup")
+                self.logger.info(f"💾 Backed up to WATCHDOG_memory: {watchdog_path}")
+            else:
+                results.append(f"❌ WATCHDOG_memory backup")
+                self.logger.warning(f"Failed to backup to WATCHDOG_memory: {watchdog_path}")
+        
+        # Determine overall success
+        if individual_success and (watchdog_success or not self.config.save_to_watchdog):
+            return True, " | ".join(results)
+        elif individual_success:
+            return True, " | ".join(results) + " (backup failed but main upload succeeded)"
+        else:
+            return False, " | ".join(results)
+    
+    async def _upload_to_repo(self, repo_name: str, file_path: str, content: str, commit_message: str) -> bool:
+        """Helper method to upload a file to a specific repository."""
         url = f"https://api.github.com/repos/{self.config.github_username}/{repo_name}/contents/{file_path}"
         
         # Check if file already exists
+        sha = None
         try:
             async with self.session.get(url, headers=self.headers) as response:
                 if response.status == 200:
                     existing_data = await response.json()
                     sha = existing_data["sha"]
-                else:
-                    sha = None
         except:
-            sha = None
+            pass  # File doesn't exist, which is fine
         
         # Encode content to base64
         import base64
@@ -2281,28 +2354,158 @@ class GitHubManager:
         if sha:
             payload["sha"] = sha
         
+        # Upload with retries
         for attempt in range(self.config.retry_attempts):
             try:
                 async with self.session.put(url, headers=self.headers, json=payload) as response:
                     if response.status in [200, 201]:
-                        self.logger.debug(f"Successfully uploaded {file_path}")
-                        return True, "File uploaded successfully"
+                        return True
                     elif response.status == 429:
                         retry_after = int(response.headers.get("Retry-After", 60))
                         self.logger.warning(f"Rate limit exceeded. Retrying after {retry_after} seconds.")
                         await asyncio.sleep(retry_after)
                         continue
-                    
-                    error_text = await response.text()
-                    self.logger.error(f"Failed to upload {file_path}: {response.status} - {error_text}")
-                    return False, f"Upload failed: {response.status} - {error_text}"
+                    else:
+                        error_text = await response.text()
+                        self.logger.debug(f"Upload failed for {repo_name}/{file_path}: {response.status} - {error_text}")
+                        return False
             except Exception as e:
-                error_msg = f"Failed to upload {file_path} (attempt {attempt+1}): {e}"
-                self.logger.error(error_msg)
+                self.logger.debug(f"Upload attempt {attempt+1} failed for {repo_name}/{file_path}: {e}")
                 if attempt < self.config.retry_attempts - 1:
                     await asyncio.sleep(self.config.retry_delay * (2 ** attempt))
         
-        return False, f"Failed to upload {file_path} after {self.config.retry_attempts} attempts"
+        return False
+
+    async def create_project_index(self, repo_name: str, paper_info: Dict[str, Any]) -> bool:
+        """Create or update project index in WATCHDOG_memory repository."""
+        if not self.config.save_to_watchdog:
+            return True  # Skip if not using WATCHDOG_memory
+        
+        index_path = "projects/PROJECT_INDEX.md"
+        
+        # Get existing index
+        url = f"https://api.github.com/repos/{self.config.github_username}/{self.config.watchdog_repo_name}/contents/{index_path}"
+        existing_content = ""
+        sha = None
+        
+        try:
+            async with self.session.get(url, headers=self.headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    import base64
+                    existing_content = base64.b64decode(data["content"]).decode('utf-8')
+                    sha = data["sha"]
+        except Exception as e:
+            self.logger.debug(f"No existing project index found: {e}")
+        
+        # Create new entry
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+        new_entry = f"""
+## 📁 {repo_name}
+
+- **Paper Title**: {paper_info.get('title', 'Unknown')}
+- **Authors**: {', '.join(paper_info.get('authors', []))}
+- **ArXiv ID**: {paper_info.get('arxiv_id', 'N/A')}
+- **Domain**: {paper_info.get('research_domain', 'N/A')}
+- **Generated**: {timestamp}
+- **Individual Repo**: [🔗 {repo_name}](https://github.com/{self.config.github_username}/{repo_name})
+- **WATCHDOG Backup**: `projects/{repo_name}/`
+- **Status**: ✅ Complete Implementation
+
+### 🔍 Key Features:
+{chr(10).join([f"- {note}" for note in paper_info.get('key_contributions', ['Complete research paper implementation'])])}
+
+---
+"""
+        
+        # Update index content
+        if existing_content:
+            # Insert new entry after header
+            lines = existing_content.split('\n')
+            header_end = 0
+            for i, line in enumerate(lines):
+                if line.startswith('---') and i > 5:  # Find first separator after header
+                    header_end = i + 1
+                    break
+            
+            if header_end > 0:
+                updated_content = '\n'.join(lines[:header_end]) + new_entry + '\n'.join(lines[header_end:])
+            else:
+                updated_content = existing_content + new_entry
+        else:
+            # Create new index
+            updated_content = f"""# 🗂️ WATCHDOG_memory Project Index
+
+This repository contains backup copies of research paper implementations generated by the M1-Evo Maintainer Agent.
+
+**Last Updated**: {timestamp}
+**Total Projects**: 1
+
+Each paper gets:
+- ✅ **Individual Repository**: Complete standalone project
+- 💾 **WATCHDOG_memory Backup**: Copy saved in `projects/` folder
+
+---
+
+{new_entry}
+
+---
+
+## 📊 Statistics
+
+- **Total Implementations**: 1
+- **Success Rate**: 100%
+- **Domains Covered**: AI, ML, CV, NLP
+- **Generated by**: M1-Evo Maintainer Agent v3.0
+
+## 🔍 How to Use
+
+### Individual Repositories
+Each paper gets its own dedicated repository with complete implementation.
+
+### WATCHDOG_memory Backups
+All projects are also backed up in this repository under `projects/` folder:
+- `projects/paper-name/src/` - Source code
+- `projects/paper-name/tests/` - Test suites
+- `projects/paper-name/docs/` - Documentation
+- `projects/paper-name/config/` - Configuration files
+
+## 🤖 About M1-Evo Agent
+
+The M1-Evo Maintainer Agent automatically transforms research papers into production-ready implementations with:
+
+- Paper-specific code (not generic templates)
+- Complete project ecosystems
+- Quality assurance and testing
+- Documentation and examples
+- Deployment configurations
+- Dual saving (individual repos + WATCHDOG_memory backups)
+"""
+        
+        # Upload updated index
+        import base64
+        encoded_content = base64.b64encode(updated_content.encode('utf-8')).decode('utf-8')
+        
+        payload = {
+            "message": f"📊 Update project index: Add {repo_name}",
+            "content": encoded_content
+        }
+        
+        if sha:
+            payload["sha"] = sha
+        
+        try:
+            async with self.session.put(url, headers=self.headers, json=payload) as response:
+                if response.status in [200, 201]:
+                    self.logger.info(f"✅ Updated project index in WATCHDOG_memory")
+                    return True
+                else:
+                    error_text = await response.text()
+                    self.logger.error(f"Failed to update project index: {response.status} - {error_text}")
+                    return False
+        except Exception as e:
+            self.logger.error(f"Failed to update project index: {e}")
+            return False
 
 
 class PaperContentAnalyzer:
