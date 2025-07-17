@@ -1,18 +1,14 @@
-name: 🚀 Weekly ArXiv Paper Implementation Generator
+name: 🚀 Daily ArXiv AI/ML Paper Implementation Generator
 
 on:
   schedule:
-    - cron: '0 2 * * 0'  # Every Sunday at 2:00 AM UTC
+    - cron: '0 3 * * *'  # Every night at 3:00 AM UTC
   workflow_dispatch:
     inputs:
       max_papers:
         description: 'Maximum number of papers to process'
         required: false
-        default: '3'
-        type: string
-      specific_domain:
-        description: 'Focus on specific research domain (e.g., nlp, cv, ml)'
-        required: false
+        default: '5'
         type: string
       dry_run:
         description: 'Run in dry-run mode (no repos created)'
@@ -69,7 +65,22 @@ jobs:
       run: |
         echo "Running ArXiv paper extraction pipeline..."
         
-        DOMAINS="${{ github.event.inputs.specific_domain || 'cs.AI cs.LG cs.CV cs.CL' }}"
+        # Comprehensive AI/ML/DL domains - automatically included every night
+        # cs.AI: Artificial Intelligence
+        # cs.LG: Machine Learning  
+        # cs.CV: Computer Vision
+        # cs.CL: Natural Language Processing
+        # cs.NE: Neural Networks
+        # cs.RO: Robotics
+        # cs.HC: Human-Computer Interaction
+        # stat.ML: Statistics - Machine Learning
+        # cs.IR: Information Retrieval
+        # cs.MM: Multimedia
+        # cs.SD: Sound Processing
+        # cs.DC: Distributed Computing
+        # cs.CR: Cryptography and Security
+        # cs.IT: Information Theory
+        DOMAINS="cs.AI cs.LG cs.CV cs.CL cs.NE cs.RO cs.HC stat.ML cs.IR cs.MM cs.SD cs.DC cs.CR cs.IT"
         MAX_PAPERS="${{ github.event.inputs.max_papers || '5' }}"
         
         python advanced_paper_extractor.py \
