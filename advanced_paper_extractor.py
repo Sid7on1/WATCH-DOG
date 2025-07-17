@@ -507,11 +507,25 @@ class AdvancedPaperExtractor:
                     
                     if response.status == 200:
                         data = await response.json()
-                        content = data['choices'][0]['message']['content']
-                        return content, None
+                        if 'choices' in data and len(data['choices']) > 0:
+                            content = data['choices'][0]['message']['content']
+                            if content and content.strip():
+                                return content, None
+                            else:
+                                self.logger.warning("LLM returned empty content")
+                                return None, "Empty response from LLM"
+                        else:
+                            self.logger.error(f"Unexpected API response format: {data}")
+                            return None, "Invalid API response format"
                     else:
                         error_text = await response.text()
                         self.logger.error(f"LLM API error {response.status}: {error_text}")
+                        if response.status == 401:
+                            return None, "Invalid API key"
+                        elif response.status == 402:
+                            return None, "Insufficient credits"
+                        elif response.status == 404:
+                            return None, f"Model {self.config.model} not found"
                         
             except Exception as e:
                 self.logger.error(f"LLM call failed (attempt {attempt + 1}): {e}")
@@ -599,11 +613,11 @@ Only include information that is explicitly mentioned in the text."""
             # Return raw content as fallback
             return {"raw_content": content, "parse_error": str(e)}
     
-    def consolidate_analyses(self, chunk_analyses: List[Dict[str, Any]]) -> ExtractedPaperContent:
+    def consolidate_analyses(self, chunk_analyses: List[Dict[str, Any]], title: str = "", abstract: str = "") -> ExtractedPaperContent:
         """Consolidate analyses from all chunks into final result."""
         self.logger.info("Consolidating analyses from all chunks")
         
-        consolidated = ExtractedPaperContent()
+        consolidated = ExtractedPaperContent(title=title, abstract=abstract)
         
         # Aggregate all findings
         all_math_formulations = []
@@ -891,7 +905,7 @@ Respond with JSON:
                             chunk_analyses.append(analysis)
                         
                         # Consolidate results
-                        extracted_content = self.consolidate_analyses(chunk_analyses)
+                        extracted_content = self.consolidate_analyses(chunk_analyses, paper_info["title"], paper_info["abstract"])
                         
                         # Add paper metadata
                         extracted_content.title = paper_info["title"]
@@ -1000,7 +1014,7 @@ Respond with JSON:
                             json.dump(progress_data, f, indent=2)
             
             # Step 4: Consolidate results
-            result = self.consolidate_analyses(chunk_analyses)
+            result = self.consolidate_analyses(chunk_analyses, pdf_path.stem, "")
             
             # Add basic metadata
             result.full_text = full_text
