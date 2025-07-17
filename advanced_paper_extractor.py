@@ -40,9 +40,9 @@ class ExtractionConfig:
     """Configuration for complete paper extraction and filtering process."""
     # OpenRouter API settings
     openrouter_api_key: str
-    model: str = "moonshotai/kimi-k2:free"  # Free model
+    model: str = "deepseek/deepseek-r1-0528:free"  # Free model
     temperature: float = 0.1
-    max_tokens: int = 1000  # Reduced from 4000 to save credits
+    max_tokens: int = 50  # Extremely reduced to save credits
     
     # Rate limiting for free tier
     requests_per_minute: int = 8  # Conservative for free tier
@@ -536,7 +536,7 @@ class AdvancedPaperExtractor:
         return None, f"Failed after {self.config.max_retries} attempts"
     
     async def analyze_chunk(self, chunk: TextChunk) -> Dict[str, Any]:
-        """Analyze a text chunk using LLM."""
+        """Analyze a text chunk - fallback to text extraction when no credits."""
         cache_key = hashlib.md5(chunk.content.encode()).hexdigest()
         cache_file = self.config.cache_dir / f"chunk_{cache_key}.json"
         
@@ -550,13 +550,16 @@ class AdvancedPaperExtractor:
             except Exception as e:
                 self.logger.warning(f"Failed to load cache: {e}")
         
+        self.logger.info(f"Analyzing chunk {chunk.chunk_id} ({chunk.section})")
+        
+        # Try LLM analysis first
         system_prompt = """You are a research paper analyzer. Extract key technical information from the given text chunk in a simple, readable format."""
         
         user_prompt = f"""Analyze this section from a research paper and extract key technical details:
 
 Section: {chunk.section}
 Content:
-{chunk.content}
+{chunk.content[:1000]}...
 
 Provide a concise summary focusing on:
 - Key algorithms or methods
@@ -568,15 +571,17 @@ Provide a concise summary focusing on:
 
 Keep the response concise and technical."""
         
-        self.logger.info(f"Analyzing chunk {chunk.chunk_id} ({chunk.section})")
-        
         content, error = await self._call_llm(user_prompt, system_prompt)
         
-        if error:
+        if error and "Insufficient credits" in error:
+            # Fallback to simple text extraction when no credits
+            self.logger.info(f"No credits available, using text extraction fallback for chunk {chunk.chunk_id}")
+            content = self._extract_key_info_from_text(chunk.content)
+        elif error:
             self.logger.error(f"Failed to analyze chunk {chunk.chunk_id}: {error}")
             return {"error": error}
         
-        # Return the raw text content - no JSON parsing needed
+        # Return the analysis
         analysis = {
             "chunk_id": chunk.chunk_id,
             "section": chunk.section,
@@ -590,6 +595,42 @@ Keep the response concise and technical."""
                 json.dump(analysis, f, indent=2)
         
         return analysis
+    
+    def _extract_key_info_from_text(self, text: str) -> str:
+        """Extract key information from text without LLM (fallback method)."""
+        lines = text.split('\n')
+        key_info = []
+        
+        # Look for equations, algorithms, and technical terms
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Look for equations (contains mathematical symbols)
+            if any(symbol in line for symbol in ['=', '∑', '∫', '∂', '∇', '±', '≤', '≥', '→', '∈']):
+                key_info.append(f"EQUATION: {line}")
+            
+            # Look for algorithm steps (numbered or bulleted)
+            elif re.match(r'^\d+[\.\)]\s+', line) or re.match(r'^[•\-\*]\s+', line):
+                key_info.append(f"STEP: {line}")
+            
+            # Look for hyperparameters (contains numbers and technical terms)
+            elif any(term in line.lower() for term in ['learning rate', 'batch size', 'epoch', 'layer', 'hidden', 'dropout']):
+                key_info.append(f"PARAMETER: {line}")
+            
+            # Look for dataset mentions
+            elif any(term in line.lower() for term in ['dataset', 'data', 'training set', 'test set', 'validation']):
+                key_info.append(f"DATA: {line}")
+            
+            # Look for evaluation metrics
+            elif any(term in line.lower() for term in ['accuracy', 'precision', 'recall', 'f1', 'score', 'metric', 'performance']):
+                key_info.append(f"METRIC: {line}")
+        
+        if key_info:
+            return "Key technical information extracted:\n" + "\n".join(key_info[:20])  # Limit to 20 items
+        else:
+            return f"Text summary: {text[:500]}..."  # Fallback to first 500 chars
     
     def consolidate_analyses(self, chunk_analyses: List[Dict[str, Any]], title: str = "", abstract: str = "") -> ExtractedPaperContent:
         """Consolidate analyses from all chunks into final result."""
@@ -724,44 +765,33 @@ Keep the response concise and technical."""
             return None
     
     async def check_paper_relevance(self, paper_info: Dict[str, Any], full_text: str = None) -> Tuple[bool, float, str]:
-        """Check if paper is relevant using LLM analysis."""
-        if not self.config.enable_relevance_filtering:
-            return True, 1.0, "Relevance filtering disabled"
+        """Check if paper is relevant using keyword matching (fallback when no credits)."""
+        # Simple keyword-based relevance check to avoid API calls
+        title = paper_info["title"].lower()
+        abstract = paper_info["abstract"].lower()
+        categories = " ".join(paper_info.get("categories", [])).lower()
         
-        # Use abstract if full text not available
-        content_to_analyze = full_text if full_text else paper_info["abstract"]
+        content = f"{title} {abstract} {categories}"
         
-        system_prompt = f"""You are an expert AI researcher. Analyze the given research paper content and determine if it's relevant for implementation.
-
-Target domains: {', '.join(self.config.target_domains)}
-Target keywords: {', '.join(self.config.relevance_keywords)}
-
-A paper is relevant if it:
-1. Presents novel algorithms, models, or techniques
-2. Has clear implementation potential
-3. Includes technical details and methodologies
-4. Is related to machine learning, AI, or computer science
-5. Has practical applications
-
-Rate relevance from 0.0 (not relevant) to 1.0 (highly relevant)."""
-
-        user_prompt = f"""Analyze this research paper for implementation relevance:
-
-Title: {paper_info['title']}
-Abstract: {paper_info['abstract']}
-Categories: {', '.join(paper_info.get('categories', []))}
-
-{f"Full content preview: {content_to_analyze[:2000]}..." if full_text else ""}
-
-Respond with JSON:
-{{
-  "relevant": true/false,
-  "relevance_score": 0.0-1.0,
-  "reasoning": "explanation of why relevant or not",
-  "key_contributions": ["list of main contributions"],
-  "implementation_complexity": "low/medium/high",
-  "recommended_for_implementation": true/false
-}}"""
+        # Count keyword matches
+        keyword_matches = 0
+        matched_keywords = []
+        
+        for keyword in self.config.relevance_keywords:
+            if keyword.lower() in content:
+                keyword_matches += 1
+                matched_keywords.append(keyword)
+        
+        # Calculate relevance score based on keyword matches
+        relevance_score = min(keyword_matches / len(self.config.relevance_keywords), 1.0)
+        
+        # Consider relevant if score is above threshold or has key ML/AI terms
+        is_relevant = (relevance_score >= self.config.relevance_threshold or 
+                      any(term in content for term in ["neural", "learning", "algorithm", "model", "ai", "ml"]))
+        
+        reasoning = f"Keyword-based analysis: {keyword_matches}/{len(self.config.relevance_keywords)} keywords matched: {matched_keywords}"
+        
+        return is_relevant, relevance_score, reasoning
 
         content, error = await self._call_llm(user_prompt, system_prompt)
         
@@ -996,7 +1026,7 @@ Examples:
   python advanced_paper_extractor.py --arxiv --domains cs.CV cs.CL --days-back 3
   
   # Free tier friendly settings
-  python advanced_paper_extractor.py --arxiv --model anthropic/claude-3-haiku --delay 10
+  python advanced_paper_extractor.py --arxiv --model deepseek/deepseek-r1-0528:free --delay 10
         """
     )
     
@@ -1013,7 +1043,7 @@ Examples:
     
     # Processing options
     parser.add_argument("--output", "-o", help="Output JSON file", default="extracted_content.json")
-    parser.add_argument("--model", help="OpenRouter model", default="anthropic/claude-3-haiku")
+    parser.add_argument("--model", help="OpenRouter model", default="deepseek/deepseek-r1-0528:free")
     parser.add_argument("--delay", type=float, default=8.0, help="Delay between requests (seconds)")
     parser.add_argument("--threshold", type=float, default=0.7, help="Relevance threshold (0-1)")
     
