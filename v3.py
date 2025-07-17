@@ -1,632 +1,774 @@
-import os
-import urllib.request
-import urllib.parse
-import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
-import requests
-from dotenv import load_dotenv
-import time
-import json
-import re
-import base64
-
-# --- ENV SETUP ---
-# Load environment variables from a .env file for secure key management.
-load_dotenv()
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-
-# --- GITHUB CONFIG ---
-GITHUB_USER = "Sid7on1"
-GITHUB_REPO = "WATCHDOG_memory"
-GITHUB_FILE_PATH = "seen_titles.txt"
-GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents/{GITHUB_FILE_PATH}"
-GITHUB_BASE_URL = f"https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents"
-GITHUB_HEADERS = {
-    "Authorization": f"token {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github.v3+json"
-}
-
-# Date-based folder for current run
-CURRENT_DATE = datetime.now().strftime("%Y-%m-%d")
-GITHUB_DATE_FOLDER = f"runs/{CURRENT_DATE}"
-
-# --- CONFIGURATION ---
-# Primary and fallback models for analysis.
-MODEL = "deepseek/deepseek-r1-0528-qwen3-8b:free"
-FALLBACK_MODEL = "google/gemini-2.0-flash-exp:free"
-
-# arXiv categories and keywords to search for.
-CATEGORIES = ["cs.AI", "cs.LG", "stat.ML"]
-KEYWORDS = ["agentic", "transformer architecture", "vision transformer", "Agents"]
-
-# Script behavior settings.
-TARGET_PAPERS_PER_DOMAIN = 2  # Number of unseen papers to fetch per domain
-MAX_SEARCH_ATTEMPTS = 50  # Maximum papers to check per domain to find unseen ones
-DAYS_LIMIT = 30
-DELAY_BETWEEN_REQUESTS = 30
-
-# Directory and file names for storing output.
-PDF_DIR = "relevant_pdfs"
-JSON_DIR = "relevant_json"
-RAW_DIR = "relevant_raw"  # For saving raw model output on JSON parse failure
-TITLE_CACHE_FILE = "seen_titles.txt"
-
-# --- DIRECTORY AND CACHE SETUP ---
-os.makedirs(PDF_DIR, exist_ok=True)
-os.makedirs(JSON_DIR, exist_ok=True)
-os.makedirs(RAW_DIR, exist_ok=True)
-
-# Global variables for tracking updates
-seen_titles = set()
-was_updated = False
-files_to_push = []  # Track files that need to be pushed to GitHub
-
-# --- GITHUB FUNCTIONS ---
-
-def fetch_seen_titles_from_github():
-    """Fetches the seen_titles.txt file from GitHub repository."""
-    try:
-        print("[⬇️ GITHUB] Fetching seen_titles.txt from repository...")
-        response = requests.get(GITHUB_API_URL, headers=GITHUB_HEADERS)
-        response.raise_for_status()
-        
-        content = response.json()["content"]
-        decoded_content = base64.b64decode(content).decode("utf-8")
-        
-        with open(TITLE_CACHE_FILE, "w", encoding="utf-8") as f:
-            f.write(decoded_content)
-        
-        print("[✅ GITHUB SYNCED] Local seen_titles.txt updated from GitHub")
-        
-    except requests.exceptions.RequestException as e:
-        print(f"[⚠️ GITHUB ERROR] Failed to fetch seen_titles.txt: {e}")
-        print("[ℹ️ GITHUB] Continuing with local cache if available...")
-    except Exception as e:
-        print(f"[⚠️ GITHUB ERROR] Unexpected error: {e}")
-        print("[ℹ️ GITHUB] Continuing with local cache if available...")
-
-def push_file_to_github(local_file_path, github_file_path):
-    """Pushes a single file to the GitHub repository."""
-    try:
-        # Read the local file
-        with open(local_file_path, "rb") as f:
-            file_content = f.read()
-        
-        # Encode content for GitHub API
-        encoded_content = base64.b64encode(file_content).decode("utf-8")
-        
-        # Check if file already exists (to get SHA for updates)
-        file_url = f"{GITHUB_BASE_URL}/{github_file_path}"
-        
-        # Prepare the data for GitHub API
-        commit_data = {
-            "message": f"Add {github_file_path} from WATCHDOG agent run on {CURRENT_DATE}",
-            "content": encoded_content
-        }
-        
-        # Check if file exists to get SHA
-        try:
-            response = requests.get(file_url, headers=GITHUB_HEADERS)
-            if response.status_code == 200:
-                # File exists, need SHA for update
-                commit_data["sha"] = response.json()["sha"]
-                print(f"[🔄 GITHUB] Updating existing file: {github_file_path}")
-            else:
-                print(f"[📁 GITHUB] Creating new file: {github_file_path}")
-        except Exception as e:
-            print(f"[ℹ️ GITHUB] Creating new file (couldn't check existence): {github_file_path}")
-        
-        # Push the file
-        put_response = requests.put(file_url, headers=GITHUB_HEADERS, json=commit_data)
-        put_response.raise_for_status()
-        
-        print(f"[✅ GITHUB] Successfully pushed: {github_file_path}")
-        return True
-        
-    except requests.exceptions.RequestException as e:
-        print(f"[❌ GITHUB ERROR] Failed to push {github_file_path}: {e}")
-        return False
-    except Exception as e:
-        print(f"[❌ GITHUB ERROR] Unexpected error pushing {github_file_path}: {e}")
-        return False
-
-def push_all_files_to_github():
-    """Pushes all created files to the GitHub repository under date-based folder."""
-    if not files_to_push:
-        print("[ℹ️ GITHUB] No files to push to repository")
-        return
-    
-    print(f"[📤 GITHUB] Pushing {len(files_to_push)} files to repository under folder: {GITHUB_DATE_FOLDER}")
-    
-    # Create a README file for the date folder
-    readme_content = f"""# WATCHDOG Agent Run - {CURRENT_DATE}
-
-This folder contains the results from the WATCHDOG agent run on {CURRENT_DATE}.
-
-## Contents:
-- **PDFs/**: Downloaded research papers
-- **JSON/**: Processed metadata and analysis results
-- **Raw/**: Raw model outputs (for debugging)
-
-## Run Statistics:
-- Target papers per domain: {TARGET_PAPERS_PER_DOMAIN}
-- Max search attempts: {MAX_SEARCH_ATTEMPTS}
-- Days limit: {DAYS_LIMIT}
-- Categories monitored: {', '.join(CATEGORIES)}
-- Keywords monitored: {', '.join(KEYWORDS)}
-
-Generated by WATCHDOG Agent on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+#!/usr/bin/env python3
 """
-    
-    # Save README locally and add to push queue
-    readme_path = "README_temp.md"
-    with open(readme_path, "w", encoding="utf-8") as f:
-        f.write(readme_content)
-    
-    # Add README to the beginning of the push queue
-    files_to_push.insert(0, (readme_path, f"{GITHUB_DATE_FOLDER}/README.md"))
-    
-    success_count = 0
-    for local_path, github_path in files_to_push:
-        if os.path.exists(local_path):
-            # Ensure the github_path is under the date folder
-            if not github_path.startswith(GITHUB_DATE_FOLDER):
-                # Extract filename and put it under appropriate subfolder
-                filename = os.path.basename(github_path)
-                if filename.endswith('.pdf'):
-                    github_path = f"{GITHUB_DATE_FOLDER}/PDFs/{filename}"
-                elif filename.endswith('.json'):
-                    github_path = f"{GITHUB_DATE_FOLDER}/JSON/{filename}"
-                elif filename.endswith('.txt') and 'raw' in local_path.lower():
-                    github_path = f"{GITHUB_DATE_FOLDER}/Raw/{filename}"
-                else:
-                    github_path = f"{GITHUB_DATE_FOLDER}/{filename}"
-            
-            if push_file_to_github(local_path, github_path):
-                success_count += 1
-        else:
-            print(f"[⚠️ GITHUB] Local file not found: {local_path}")
-    
-    print(f"[📊 GITHUB] Successfully pushed {success_count}/{len(files_to_push)} files")
-    
-    # Clean up temporary README
-    if os.path.exists(readme_path):
-        os.remove(readme_path)
-    
-    # Clear the list after pushing
-    files_to_push.clear()
+Advanced Paper Content Extractor - Extracts actual content from research papers
+using intelligent chunking and LLM analysis for paper-specific implementations.
 
-def push_seen_titles_to_github():
-    """Pushes the updated seen_titles.txt file to GitHub repository."""
-    try:
-        print("[⬆️ GITHUB] Uploading updated seen_titles.txt to GitHub...")
+Features:
+- Robust PDF text extraction with multiple fallbacks
+- Intelligent text chunking for LLM processing
+- Free-tier friendly with rate limiting and delays
+- Advanced content analysis using OpenRouter LLMs
+- Comprehensive error handling and recovery
+- Progress tracking and resumable processing
+"""
+
+import os
+import re
+import json
+import time
+import asyncio
+import aiohttp
+import hashlib
+import PyPDF2
+import fitz  # PyMuPDF
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any, Union
+import logging
+from dataclasses import dataclass, asdict, field
+from datetime import datetime
+import arxiv
+from tqdm import tqdm
+import tiktoken
+from dotenv import load_dotenv
+import tempfile
+import shutil
+import random
+
+
+@dataclass
+class ExtractionConfig:
+    """Configuration for paper extraction process."""
+    # OpenRouter API settings
+    openrouter_api_key: str
+    model: str = "anthropic/claude-3-haiku"  # Cheaper model for free tier
+    temperature: float = 0.1
+    max_tokens: int = 4000
+    
+    # Rate limiting for free tier
+    requests_per_minute: int = 10  # Conservative for free tier
+    delay_between_requests: float = 6.0  # 6 seconds between requests
+    max_retries: int = 3
+    backoff_factor: float = 2.0
+    
+    # Chunking settings
+    max_chunk_size: int = 3000  # Tokens per chunk
+    chunk_overlap: int = 200    # Overlap between chunks
+    
+    # Processing settings
+    enable_caching: bool = True
+    cache_dir: Path = Path("extraction_cache")
+    resume_on_failure: bool = True
+    
+    # Output settings
+    save_intermediate: bool = True
+    verbose: bool = True
+
+
+@dataclass
+class TextChunk:
+    """Represents a chunk of text for processing."""
+    content: str
+    chunk_id: int
+    section: str
+    start_page: int
+    end_page: int
+    token_count: int
+    processed: bool = False
+    analysis_result: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class ExtractedPaperContent:
+    """Comprehensive content extracted from a research paper."""
+    # Basic information
+    title: str
+    abstract: str
+    authors: List[str] = field(default_factory=list)
+    publication_info: Dict[str, str] = field(default_factory=dict)
+    
+    # Full content
+    full_text: str = ""
+    sections: Dict[str, str] = field(default_factory=dict)
+    
+    # Technical content
+    mathematical_formulations: List[Dict[str, str]] = field(default_factory=list)
+    algorithms: List[Dict[str, str]] = field(default_factory=list)
+    model_architectures: List[Dict[str, Any]] = field(default_factory=list)
+    
+    # Implementation details
+    hyperparameters: Dict[str, Any] = field(default_factory=dict)
+    loss_functions: List[str] = field(default_factory=list)
+    optimization_details: Dict[str, Any] = field(default_factory=dict)
+    
+    # Experimental details
+    datasets_used: List[str] = field(default_factory=list)
+    evaluation_metrics: List[str] = field(default_factory=list)
+    experimental_setup: str = ""
+    results_summary: str = ""
+    
+    # References and related work
+    key_references: List[str] = field(default_factory=list)
+    related_methods: List[str] = field(default_factory=list)
+    
+    # Figures and tables
+    figures: List[Dict[str, str]] = field(default_factory=list)
+    tables: List[Dict[str, str]] = field(default_factory=list)
+    
+    # Code and implementation hints
+    code_snippets: List[str] = field(default_factory=list)
+    implementation_notes: List[str] = field(default_factory=list)
+    
+    # Metadata
+    extraction_timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    processing_stats: Dict[str, Any] = field(default_factory=dict)
+
+
+class AdvancedPaperExtractor:
+    """Advanced paper content extractor with LLM analysis."""
+    
+    def __init__(self, config: ExtractionConfig):
+        self.config = config
+        self.logger = self._setup_logging()
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.tokenizer = tiktoken.get_encoding("cl100k_base")  # GPT-4 tokenizer
         
-        # Read the local file content
-        with open(TITLE_CACHE_FILE, "r", encoding="utf-8") as f:
-            content = f.read()
+        # Rate limiting
+        self.last_request_time = 0
+        self.request_count = 0
+        self.request_times = []
         
-        # Encode content for GitHub API
-        encoded_content = base64.b64encode(content.encode("utf-8")).decode("utf-8")
+        # Caching
+        if self.config.enable_caching:
+            self.config.cache_dir.mkdir(exist_ok=True)
         
-        # Get current file SHA (required for updates)
-        response = requests.get(GITHUB_API_URL, headers=GITHUB_HEADERS)
-        response.raise_for_status()
-        current_sha = response.json()["sha"]
+        # Progress tracking
+        self.progress_file = Path("extraction_progress.json")
+    
+    def _setup_logging(self) -> logging.Logger:
+        """Setup comprehensive logging."""
+        logger = logging.getLogger("PaperExtractor")
+        logger.setLevel(logging.DEBUG if self.config.verbose else logging.INFO)
         
-        # Prepare update data
-        update_data = {
-            "message": f"Update seen_titles.txt from WATCHDOG agent run on {CURRENT_DATE}",
-            "content": encoded_content,
-            "sha": current_sha
-        }
+        # File handler
+        log_file = Path("paper_extraction.log")
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(logging.DEBUG)
         
-        # Push the update
-        put_response = requests.put(GITHUB_API_URL, headers=GITHUB_HEADERS, json=update_data)
-        put_response.raise_for_status()
+        # Console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
         
-        print("[✅ GITHUB SYNCED] seen_titles.txt successfully pushed to GitHub")
+        # Formatter
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
         
-    except requests.exceptions.RequestException as e:
-        print(f"[⚠️ GITHUB ERROR] Failed to push seen_titles.txt: {e}")
-    except Exception as e:
-        print(f"[⚠️ GITHUB ERROR] Unexpected error during push: {e}")
-
-def track_file_for_github_push(local_path, github_path=None):
-    """Adds a file to the list of files to be pushed to GitHub under the date folder."""
-    global files_to_push
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
+        
+        return logger
     
-    if github_path is None:
-        # Auto-generate github path based on file type and name
-        filename = os.path.basename(local_path)
-        if filename.endswith('.pdf'):
-            github_path = f"{GITHUB_DATE_FOLDER}/PDFs/{filename}"
-        elif filename.endswith('.json'):
-            github_path = f"{GITHUB_DATE_FOLDER}/JSON/{filename}"
-        elif filename.endswith('.txt') and 'raw' in local_path.lower():
-            github_path = f"{GITHUB_DATE_FOLDER}/Raw/{filename}"
-        else:
-            github_path = f"{GITHUB_DATE_FOLDER}/{filename}"
-    
-    files_to_push.append((local_path, github_path))
-    print(f"[📝 GITHUB QUEUE] Added to push queue: {github_path}")
-
-def load_seen_titles():
-    """Loads previously processed paper titles from the local cache file to avoid duplicates."""
-    global seen_titles
-    
-    if not os.path.exists(TITLE_CACHE_FILE):
-        seen_titles = set()
-        return
-    
-    try:
-        with open(TITLE_CACHE_FILE, "r", encoding="utf-8") as f:
-            seen_titles = {line.strip() for line in f if line.strip()}
-        print(f"[📚 CACHE] Loaded {len(seen_titles)} previously seen titles")
-    except IOError as e:
-        print(f"[⚠️ CACHE WARNING] Could not read cache file {TITLE_CACHE_FILE}: {e}")
-        seen_titles = set()
-
-# --- HELPER FUNCTIONS ---
-
-def sanitize_filename(name):
-    """Removes or replaces characters from a string to make it a valid filename."""
-    # Remove newlines and carriage returns
-    name = name.replace('\n', ' ').replace('\r', '')
-    
-    # Handle special transformations first
-    # Replace colon with "Using" if it appears to be a title separator
-    if ':' in name:
-        parts = name.split(':', 1)
-        if len(parts) == 2:
-            name = f"{parts[0]} Using {parts[1].strip()}"
-    
-    # Remove other invalid filename characters
-    name = re.sub(r'[\\/*?"<>|]', "", name)
-    
-    # Replace hyphens with spaces for better word separation
-    name = name.replace('-', ' ')
-    
-    # Replace "sim-to-real" pattern specifically 
-    name = re.sub(r'\bsim[\s\-]*to[\s\-]*real\b', 'Sim to Real', name, flags=re.IGNORECASE)
-    
-    # Convert to title case for better readability
-    name = ' '.join(word.capitalize() for word in name.split())
-    
-    # Replace spaces with underscores
-    name = name.replace(" ", "_")
-    
-    # Remove multiple consecutive underscores
-    name = re.sub(r'__+', '_', name)
-    
-    # Remove leading/trailing underscores and limit length
-    return name.strip('_')[:100]
-
-def try_parse_json(raw_text):
-    """Attempts to parse a JSON object from a string that might contain extra text."""
-    match = re.search(r"{\s*\"title\":.*}", raw_text, re.DOTALL)
-    if not match:
-        return None
-    json_str = match.group(0)
-    try:
-        return json.loads(json_str)
-    except json.JSONDecodeError as e:
-        print(f"[⚠️ JSON PARSE ERROR] Could not parse JSON: {e}")
-        return None
-
-def fetch_arxiv_with_start(query, start_index=0):
-    """Fetches paper data from the arXiv API for a given query with pagination support."""
-    base_url = "http://export.arxiv.org/api/query?"
-    paginated_query = f"{query}&start={start_index}"
-    full_url = base_url + paginated_query
-    print(f"[📡 Fetching from arXiv] {full_url}")
-    try:
-        with urllib.request.urlopen(full_url) as response:
-            return response.read()
-    except urllib.error.URLError as e:
-        print(f"[❌ ARXIV ERROR] Failed to fetch from arXiv: {e}")
-        return None
-
-def ask_openrouter_for_relevance(text):
-    """
-    Sends a paper's abstract to OpenRouter for relevance analysis.
-    Switches to a fallback model if the primary is rate-limited.
-    """
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    models_to_try = [MODEL, FALLBACK_MODEL]
-
-    for model in models_to_try:
-        data = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are DOG, an AI research assistant. Your task is to evaluate arXiv abstracts.\n"
-                        "Focus on AI agent design or advanced Transformer architectures, including SLAM systems.\n\n"
-                        "CRITERIA:\n"
-                        "- Transformer variant, attention mechanism, routing, or efficiency improvement.\n"
-                        "- Agentic systems: memory, modularity, reasoning, vision-language.\n"
-                        "- Feasible implementation (e.g., PyTorch).\n"
-                        "- Usefulness to autonomous agent projects.\n\n"
-                        "IF RELEVANT, return JSON (no markdown):\n"
-                        "{\n"
-                        " \"title\": \"Exact title\",\n"
-                        " \"summary_and_goal\": \"Short summary + use\",\n"
-                        " \"label\": \"cs_AI\",\n"
-                        " \"paper_url\": \"https://arxiv.org/pdf/xxxx.xxxxx.pdf\",\n"
-                        " \"relevance_score\": 0.0 to 1.0\n"
-                        "}\n"
-                        "IF IRRELEVANT: Return only SKIP"
-                    )
-                },
-                {"role": "user", "content": f"Abstract:\n{text}"}
-            ],
-            "provider": {
-                "order": ["chutes", "targon"],
-                "allow_fallbacks": True
+    async def __aenter__(self):
+        """Async context manager entry."""
+        self.session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=300),
+            headers={
+                "Authorization": f"Bearer {self.config.openrouter_api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "AdvancedPaperExtractor/1.0"
             }
+        )
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        if self.session:
+            await self.session.close()
+    
+    def extract_text_from_pdf(self, pdf_path: Union[str, Path]) -> Tuple[str, Dict[str, Any]]:
+        """Extract text from PDF with multiple fallback methods."""
+        pdf_path = Path(pdf_path)
+        if not pdf_path.exists():
+            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+        
+        self.logger.info(f"Extracting text from PDF: {pdf_path}")
+        
+        extraction_stats = {
+            "file_size": pdf_path.stat().st_size,
+            "extraction_method": None,
+            "pages_processed": 0,
+            "extraction_time": 0
         }
-
+        
+        start_time = time.time()
+        
+        # Method 1: PyMuPDF (fitz) - Best for most PDFs
         try:
-            print(f"[🔍 DEBUG] Calling OpenRouter model: {model}")
-            response = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=headers,
-                json=data
-            )
-            print(f"[✅ STATUS] {response.status_code}")
-
-            if response.status_code == 429:
-                print(f"[🚫 RATE LIMITED] Model {model} is limited. Switching to fallback...")
+            text, pages = self._extract_with_pymupdf(pdf_path)
+            if text and len(text.strip()) > 100:
+                extraction_stats["extraction_method"] = "PyMuPDF"
+                extraction_stats["pages_processed"] = pages
+                extraction_stats["extraction_time"] = time.time() - start_time
+                self.logger.info(f"Successfully extracted {len(text)} characters using PyMuPDF")
+                return text, extraction_stats
+        except Exception as e:
+            self.logger.warning(f"PyMuPDF extraction failed: {e}")
+        
+        # Method 2: PyPDF2 - Fallback
+        try:
+            text, pages = self._extract_with_pypdf2(pdf_path)
+            if text and len(text.strip()) > 100:
+                extraction_stats["extraction_method"] = "PyPDF2"
+                extraction_stats["pages_processed"] = pages
+                extraction_stats["extraction_time"] = time.time() - start_time
+                self.logger.info(f"Successfully extracted {len(text)} characters using PyPDF2")
+                return text, extraction_stats
+        except Exception as e:
+            self.logger.warning(f"PyPDF2 extraction failed: {e}")
+        
+        # Method 3: OCR fallback (if available)
+        try:
+            text, pages = self._extract_with_ocr(pdf_path)
+            if text and len(text.strip()) > 100:
+                extraction_stats["extraction_method"] = "OCR"
+                extraction_stats["pages_processed"] = pages
+                extraction_stats["extraction_time"] = time.time() - start_time
+                self.logger.info(f"Successfully extracted {len(text)} characters using OCR")
+                return text, extraction_stats
+        except Exception as e:
+            self.logger.warning(f"OCR extraction failed: {e}")
+        
+        raise Exception("All text extraction methods failed")
+    
+    def _extract_with_pymupdf(self, pdf_path: Path) -> Tuple[str, int]:
+        """Extract text using PyMuPDF."""
+        doc = fitz.open(str(pdf_path))
+        text_parts = []
+        
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            text = page.get_text()
+            
+            # Clean up text
+            text = self._clean_extracted_text(text)
+            if text.strip():
+                text_parts.append(f"--- Page {page_num + 1} ---\n{text}\n")
+        
+        doc.close()
+        return "\n".join(text_parts), len(doc)
+    
+    def _extract_with_pypdf2(self, pdf_path: Path) -> Tuple[str, int]:
+        """Extract text using PyPDF2."""
+        text_parts = []
+        
+        with open(pdf_path, 'rb') as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+            
+            for page_num, page in enumerate(pdf_reader.pages):
+                text = page.extract_text()
+                text = self._clean_extracted_text(text)
+                if text.strip():
+                    text_parts.append(f"--- Page {page_num + 1} ---\n{text}\n")
+        
+        return "\n".join(text_parts), len(pdf_reader.pages)
+    
+    def _extract_with_ocr(self, pdf_path: Path) -> Tuple[str, int]:
+        """Extract text using OCR (requires pytesseract and pdf2image)."""
+        try:
+            import pytesseract
+            from pdf2image import convert_from_path
+            
+            # Convert PDF to images
+            images = convert_from_path(str(pdf_path))
+            text_parts = []
+            
+            for page_num, image in enumerate(images):
+                text = pytesseract.image_to_string(image)
+                text = self._clean_extracted_text(text)
+                if text.strip():
+                    text_parts.append(f"--- Page {page_num + 1} ---\n{text}\n")
+            
+            return "\n".join(text_parts), len(images)
+            
+        except ImportError:
+            raise Exception("OCR dependencies not installed (pytesseract, pdf2image)")
+    
+    def _clean_extracted_text(self, text: str) -> str:
+        """Clean and normalize extracted text."""
+        if not text:
+            return ""
+        
+        # Remove excessive whitespace
+        text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)
+        text = re.sub(r' +', ' ', text)
+        
+        # Fix common PDF extraction issues
+        text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)  # Add space between words
+        text = re.sub(r'(\w)-\s*\n\s*(\w)', r'\1\2', text)  # Fix hyphenated words
+        
+        # Remove page headers/footers (common patterns)
+        lines = text.split('\n')
+        cleaned_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            # Skip likely headers/footers
+            if (len(line) < 5 or 
+                re.match(r'^\d+$', line) or  # Page numbers
+                re.match(r'^Page \d+', line, re.IGNORECASE) or
+                line.lower() in ['abstract', 'introduction', 'conclusion', 'references']):
                 continue
-
-            response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"].strip()
-            return content
-
-        except requests.exceptions.RequestException as e:
-            print(f"[❌ ERROR] Request failed for {model}: {e}")
-            continue
-
-    return None
-
-def save_pdf(title, pdf_url):
-    """Downloads and saves a PDF from a URL."""
-    safe_name = sanitize_filename(title)
-    pdf_path = os.path.join(PDF_DIR, f"{safe_name}.pdf")
-    try:
-        with requests.get(pdf_url, stream=True) as r:
-            r.raise_for_status()
-            with open(pdf_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-        print(f"[📄 PDF Saved] {pdf_path}")
+            cleaned_lines.append(line)
         
-        # Track file for GitHub push
-        track_file_for_github_push(pdf_path)
+        return '\n'.join(cleaned_lines)
+    
+    def create_text_chunks(self, text: str) -> List[TextChunk]:
+        """Create intelligent text chunks for LLM processing."""
+        self.logger.info("Creating text chunks for LLM processing")
         
-        return pdf_path
-    except requests.exceptions.RequestException as e:
-        print(f"[❌ PDF Download Failed] {e}")
-        return None
-
-def save_json(info):
-    """Saves the processed information as a JSON file."""
-    safe_name = sanitize_filename(info["title"])
-    json_path = os.path.join(JSON_DIR, f"{safe_name}.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(info, f, indent=2, ensure_ascii=False)
-    print(f"[📁 JSON Saved] {json_path}")
-    
-    # Track file for GitHub push
-    track_file_for_github_push(json_path)
-
-def add_title_to_cache(title):
-    """Appends a new title to the cache file and the in-memory set."""
-    global was_updated
-    
-    title = title.strip()
-    if title not in seen_titles:
-        seen_titles.add(title)
-        with open(TITLE_CACHE_FILE, "a", encoding="utf-8") as f:
-            f.write(title + "\n")
-        was_updated = True
-        print(f"[📝 CACHE] Added new title to cache: {title}")
-
-def process_entry(entry, label):
-    """Processes a single paper entry from the arXiv XML feed."""
-    ns = {"atom": "http://www.w3.org/2005/Atom"}
-    try:
-        title = entry.find("atom:title", ns).text.strip()
-        title = re.sub(r'\s+', ' ', title)  # Normalize whitespace
-        summary = entry.find("atom:summary", ns).text.strip()
-        published_str = entry.find("atom:published", ns).text
-        pub_date = datetime.strptime(published_str, "%Y-%m-%dT%H:%M:%SZ")
-        pdf_url = None
-        for link in entry.findall("atom:link", ns):
-            if link.get("title") == "pdf":
-                pdf_url = link.get("href")
-                break
-        if not pdf_url:
-            return False
-    except AttributeError as e:
-        print(f"[⚠️ XML PARSE WARNING] Could not parse entry, skipping: {e}")
-        return False
-
-    if title in seen_titles:
-        print(f"[⏭️ Already Seen] Skipping: {title}")
-        return False
-    
-    if datetime.now() - pub_date > timedelta(days=DAYS_LIMIT):
-        print(f"[⏭️ Too Old] Skipping paper older than {DAYS_LIMIT} days: {title}")
-        return False
-
-    print(f"\n✅ Processing: {title}")
-    save_pdf(title, pdf_url)
-    # Cache title immediately after download to prevent re-processing.
-    add_title_to_cache(title)
-
-    try:
-        response_text = ask_openrouter_for_relevance(summary)
-
-        if response_text is None:
-            print("[⏭️ Skipping analysis] Could not get response from OpenRouter.")
-            return True  # Still counts as processed since we downloaded it
-        if response_text.strip().upper() == "SKIP":
-            print("[⏭️ Skipped by DOG] Model determined paper is not relevant.")
-            return True  # Still counts as processed
-
-        json_data = try_parse_json(response_text)
-        if json_data:
-            # Override model's title with the true XML title to ensure accuracy.
-            json_data["title"] = title
-            json_data["label"] = label
-            json_data["paper_url"] = pdf_url
-            save_json(json_data)
-        else:
-            print("⚠️ Model flagged paper as relevant, but failed to return proper JSON.")
-            # Save raw response for manual review
-            fallback_name = sanitize_filename(title)
-            fallback_path = os.path.join(RAW_DIR, f"{fallback_name}.txt")
-            with open(fallback_path, "w", encoding="utf-8") as f:
-                f.write(response_text)
-            print(f"[📄 RAW TEXT Saved to] {fallback_path}")
+        # First, split by sections if possible
+        sections = self._identify_sections(text)
+        chunks = []
+        chunk_id = 0
+        
+        for section_name, section_text in sections.items():
+            # Calculate tokens for this section
+            tokens = len(self.tokenizer.encode(section_text))
             
-            # Track raw file for GitHub push
-            track_file_for_github_push(fallback_path)
-
-    except Exception as e:
-        print(f"[⚠️ UNHANDLED ERROR] An error occurred while processing '{title}': {e}")
-    finally:
-        print(f"--- Waiting {DELAY_BETWEEN_REQUESTS} seconds ---")
-        time.sleep(DELAY_BETWEEN_REQUESTS)
-    
-    return True  # Successfully processed
-
-def fetch_unseen_papers_from_domain(query_info):
-    """
-    Fetches a specific number of unseen papers from a domain.
-    Keeps searching until TARGET_PAPERS_PER_DOMAIN unseen papers are found.
-    """
-    label = query_info["label"]
-    base_query = query_info["query"]
-    
-    print(f"\n{'='*50}")
-    print(f"🎯 TARGET: {TARGET_PAPERS_PER_DOMAIN} unseen papers from domain: {label}")
-    print(f"{'='*50}")
-    
-    papers_processed = 0
-    start_index = 0
-    papers_checked = 0
-    
-    while papers_processed < TARGET_PAPERS_PER_DOMAIN and papers_checked < MAX_SEARCH_ATTEMPTS:
-        print(f"\n[🔍 SEARCH] Batch {start_index//10 + 1} for domain '{label}' (Papers processed: {papers_processed}/{TARGET_PAPERS_PER_DOMAIN})")
-        
-        # Fetch papers with pagination
-        query_with_pagination = f"{base_query}&start={start_index}"
-        xml_data = fetch_arxiv_with_start(base_query, start_index)
-        
-        if not xml_data:
-            print(f"[❌ FETCH FAILED] Could not fetch papers for domain '{label}' at start_index {start_index}")
-            break
-        
-        root = ET.fromstring(xml_data)
-        entries = root.findall("{http://www.w3.org/2005/Atom}entry")
-        
-        if not entries:
-            print(f"[📄 NO MORE PAPERS] No more papers found for domain '{label}'")
-            break
-        
-        batch_processed = 0
-        for entry in entries:
-            papers_checked += 1
-            
-            if papers_checked > MAX_SEARCH_ATTEMPTS:
-                print(f"[🛑 SEARCH LIMIT] Reached maximum search attempts ({MAX_SEARCH_ATTEMPTS}) for domain '{label}'")
-                break
-            
-            # Process entry and check if it was actually processed (not skipped)
-            if process_entry(entry, label):
-                papers_processed += 1
-                batch_processed += 1
-                print(f"[✅ PROGRESS] Domain '{label}': {papers_processed}/{TARGET_PAPERS_PER_DOMAIN} papers processed")
+            if tokens <= self.config.max_chunk_size:
+                # Section fits in one chunk
+                chunks.append(TextChunk(
+                    content=section_text,
+                    chunk_id=chunk_id,
+                    section=section_name,
+                    start_page=0,  # Would need page tracking
+                    end_page=0,
+                    token_count=tokens
+                ))
+                chunk_id += 1
+            else:
+                # Split section into smaller chunks
+                section_chunks = self._split_text_by_tokens(
+                    section_text, 
+                    self.config.max_chunk_size,
+                    self.config.chunk_overlap
+                )
                 
-                if papers_processed >= TARGET_PAPERS_PER_DOMAIN:
-                    print(f"[🎉 DOMAIN COMPLETE] Found {TARGET_PAPERS_PER_DOMAIN} unseen papers for domain '{label}'")
+                for i, chunk_text in enumerate(section_chunks):
+                    chunks.append(TextChunk(
+                        content=chunk_text,
+                        chunk_id=chunk_id,
+                        section=f"{section_name}_part_{i+1}",
+                        start_page=0,
+                        end_page=0,
+                        token_count=len(self.tokenizer.encode(chunk_text))
+                    ))
+                    chunk_id += 1
+        
+        self.logger.info(f"Created {len(chunks)} text chunks")
+        return chunks
+    
+    def _identify_sections(self, text: str) -> Dict[str, str]:
+        """Identify and extract sections from the paper."""
+        sections = {"full_text": text}  # Fallback
+        
+        # Common section headers
+        section_patterns = [
+            r'(?i)^\s*(abstract)\s*$',
+            r'(?i)^\s*(\d+\.?\s*introduction)\s*$',
+            r'(?i)^\s*(\d+\.?\s*related\s+work)\s*$',
+            r'(?i)^\s*(\d+\.?\s*method(?:ology)?)\s*$',
+            r'(?i)^\s*(\d+\.?\s*approach)\s*$',
+            r'(?i)^\s*(\d+\.?\s*model)\s*$',
+            r'(?i)^\s*(\d+\.?\s*experiment(?:s|al\s+setup)?)\s*$',
+            r'(?i)^\s*(\d+\.?\s*results?)\s*$',
+            r'(?i)^\s*(\d+\.?\s*evaluation)\s*$',
+            r'(?i)^\s*(\d+\.?\s*discussion)\s*$',
+            r'(?i)^\s*(\d+\.?\s*conclusion)\s*$',
+            r'(?i)^\s*(references)\s*$',
+        ]
+        
+        # Find section boundaries
+        lines = text.split('\n')
+        section_starts = []
+        
+        for i, line in enumerate(lines):
+            for pattern in section_patterns:
+                if re.match(pattern, line.strip()):
+                    section_name = re.match(pattern, line.strip()).group(1).strip()
+                    section_starts.append((i, section_name.lower()))
                     break
         
-        if batch_processed == 0:
-            print(f"[⚠️ NO NEW PAPERS] No unseen papers found in this batch for domain '{label}'")
+        # Extract sections
+        if section_starts:
+            sections = {}
+            for i, (start_line, section_name) in enumerate(section_starts):
+                end_line = section_starts[i + 1][0] if i + 1 < len(section_starts) else len(lines)
+                section_text = '\n'.join(lines[start_line:end_line])
+                sections[section_name] = section_text
         
-        # Move to next batch
-        start_index += len(entries)
+        return sections
+    
+    def _split_text_by_tokens(self, text: str, max_tokens: int, overlap: int) -> List[str]:
+        """Split text into chunks by token count with overlap."""
+        tokens = self.tokenizer.encode(text)
+        chunks = []
         
-        # Small delay between batches
-        if papers_processed < TARGET_PAPERS_PER_DOMAIN:
-            print(f"[⏱️ BATCH DELAY] Waiting before next batch...")
-            time.sleep(5)
-    
-    if papers_processed < TARGET_PAPERS_PER_DOMAIN:
-        print(f"[⚠️ INCOMPLETE] Only found {papers_processed}/{TARGET_PAPERS_PER_DOMAIN} unseen papers for domain '{label}'")
-    
-    return papers_processed
-
-def run():
-    """Main function to run the arXiv fetching and processing loop."""
-    global was_updated
-    
-    # Initialize GitHub sync and load cache
-    fetch_seen_titles_from_github()
-    load_seen_titles()
-    
-    # Build query list
-    queries = []
-    for cat in CATEGORIES:
-        query_str = f"search_query=cat:{urllib.parse.quote(cat)}&sortBy=submittedDate&sortOrder=descending&max_results=10"
-        queries.append({"query": query_str, "label": cat.replace(".", "_")})
-
-    for keyword in KEYWORDS:
-        query_str = f"search_query=all:{urllib.parse.quote(keyword)}&sortBy=submittedDate&sortOrder=descending&max_results=10"
-        queries.append({"query": query_str, "label": keyword.replace(" ", "_")})
-
-    # Process each domain to get TARGET_PAPERS_PER_DOMAIN unseen papers
-    total_papers_processed = 0
-    for query_info in queries:
-        papers_from_domain = fetch_unseen_papers_from_domain(query_info)
-        total_papers_processed += papers_from_domain
+        start = 0
+        while start < len(tokens):
+            end = min(start + max_tokens, len(tokens))
+            chunk_tokens = tokens[start:end]
+            chunk_text = self.tokenizer.decode(chunk_tokens)
+            chunks.append(chunk_text)
+            
+            if end >= len(tokens):
+                break
+            
+            start = end - overlap
         
-        print(f"\n[📊 DOMAIN SUMMARY] '{query_info['label']}': {papers_from_domain} papers processed")
+        return chunks
     
-    print(f"\n[📊 FINAL SUMMARY] Total papers processed across all domains: {total_papers_processed}")
+    async def _rate_limit_check(self):
+        """Check and enforce rate limits for free tier."""
+        current_time = time.time()
+        
+        # Remove old request times (older than 1 minute)
+        self.request_times = [t for t in self.request_times if current_time - t < 60]
+        
+        # Check if we're at the limit
+        if len(self.request_times) >= self.config.requests_per_minute:
+            sleep_time = 60 - (current_time - self.request_times[0])
+            if sleep_time > 0:
+                self.logger.info(f"Rate limit reached, sleeping for {sleep_time:.1f} seconds")
+                await asyncio.sleep(sleep_time)
+        
+        # Ensure minimum delay between requests
+        time_since_last = current_time - self.last_request_time
+        if time_since_last < self.config.delay_between_requests:
+            sleep_time = self.config.delay_between_requests - time_since_last
+            self.logger.debug(f"Enforcing delay: sleeping for {sleep_time:.1f} seconds")
+            await asyncio.sleep(sleep_time)
+        
+        self.request_times.append(time.time())
+        self.last_request_time = time.time()
     
-    # Push all files to GitHub under the date folder
-    if files_to_push:
-        push_all_files_to_github()
+    async def _call_llm(self, prompt: str, system_prompt: str = None) -> Tuple[Optional[str], Optional[str]]:
+        """Call OpenRouter LLM with rate limiting and error handling."""
+        await self._rate_limit_check()
+        
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
+        payload = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": self.config.temperature,
+            "max_tokens": self.config.max_tokens,
+        }
+        
+        for attempt in range(self.config.max_retries):
+            try:
+                async with self.session.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    json=payload
+                ) as response:
+                    if response.status == 429:
+                        retry_after = int(response.headers.get("Retry-After", 60))
+                        self.logger.warning(f"Rate limited, waiting {retry_after} seconds")
+                        await asyncio.sleep(retry_after)
+                        continue
+                    
+                    if response.status == 200:
+                        data = await response.json()
+                        content = data['choices'][0]['message']['content']
+                        return content, None
+                    else:
+                        error_text = await response.text()
+                        self.logger.error(f"LLM API error {response.status}: {error_text}")
+                        
+            except Exception as e:
+                self.logger.error(f"LLM call failed (attempt {attempt + 1}): {e}")
+                if attempt < self.config.max_retries - 1:
+                    sleep_time = self.config.backoff_factor ** attempt
+                    await asyncio.sleep(sleep_time)
+        
+        return None, f"Failed after {self.config.max_retries} attempts"
     
-    # Sync back to GitHub if there were updates
-    if was_updated:
-        push_seen_titles_to_github()
-        print(f"[✅ SYNC COMPLETE] Updated GitHub with {len(seen_titles)} total cached titles")
-    else:
-        print("[ℹ️ GITHUB] No new titles added. Skipping GitHub push.")
+    async def analyze_chunk(self, chunk: TextChunk) -> Dict[str, Any]:
+        """Analyze a text chunk using LLM."""
+        cache_key = hashlib.md5(chunk.content.encode()).hexdigest()
+        cache_file = self.config.cache_dir / f"chunk_{cache_key}.json"
+        
+        # Check cache first
+        if self.config.enable_caching and cache_file.exists():
+            try:
+                with open(cache_file, 'r') as f:
+                    cached_result = json.load(f)
+                self.logger.debug(f"Using cached analysis for chunk {chunk.chunk_id}")
+                return cached_result
+            except Exception as e:
+                self.logger.warning(f"Failed to load cache: {e}")
+        
+        system_prompt = """You are an expert research paper analyzer. Extract specific technical details from the given text chunk.
+
+Focus on:
+1. Mathematical formulations and equations
+2. Algorithm descriptions and pseudocode
+3. Model architecture details
+4. Hyperparameters and configuration values
+5. Dataset information and preprocessing steps
+6. Evaluation metrics and experimental setup
+7. Implementation hints and code references
+
+Return your analysis as a structured JSON object."""
+        
+        user_prompt = f"""Analyze this section from a research paper:
+
+Section: {chunk.section}
+Content:
+{chunk.content}
+
+Extract all technical details in JSON format:
+{{
+  "mathematical_formulations": [
+    {{"equation": "formula", "description": "what it represents", "variables": {{"var": "meaning"}}}}
+  ],
+  "algorithms": [
+    {{"name": "algorithm name", "steps": ["step 1", "step 2"], "complexity": "O(n)"}}
+  ],
+  "model_architecture": {{
+    "layers": [], "parameters": {{}}, "architecture_type": ""
+  }},
+  "hyperparameters": {{"param": "value"}},
+  "datasets": ["dataset names"],
+  "evaluation_metrics": ["metric names"],
+  "implementation_notes": ["specific implementation details"],
+  "key_insights": ["important findings or contributions"]
+}}
+
+Only include information that is explicitly mentioned in the text."""
+        
+        self.logger.info(f"Analyzing chunk {chunk.chunk_id} ({chunk.section})")
+        
+        content, error = await self._call_llm(user_prompt, system_prompt)
+        
+        if error:
+            self.logger.error(f"Failed to analyze chunk {chunk.chunk_id}: {error}")
+            return {"error": error}
+        
+        try:
+            # Try to parse as JSON
+            analysis = json.loads(content)
+            
+            # Cache the result
+            if self.config.enable_caching:
+                with open(cache_file, 'w') as f:
+                    json.dump(analysis, f, indent=2)
+            
+            return analysis
+            
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse LLM response as JSON: {e}")
+            # Return raw content as fallback
+            return {"raw_content": content, "parse_error": str(e)}
+    
+    def consolidate_analyses(self, chunk_analyses: List[Dict[str, Any]]) -> ExtractedPaperContent:
+        """Consolidate analyses from all chunks into final result."""
+        self.logger.info("Consolidating analyses from all chunks")
+        
+        consolidated = ExtractedPaperContent()
+        
+        # Aggregate all findings
+        all_math_formulations = []
+        all_algorithms = []
+        all_hyperparams = {}
+        all_datasets = set()
+        all_metrics = set()
+        all_implementation_notes = []
+        all_insights = []
+        
+        for analysis in chunk_analyses:
+            if "error" in analysis:
+                continue
+            
+            # Mathematical formulations
+            if "mathematical_formulations" in analysis:
+                all_math_formulations.extend(analysis["mathematical_formulations"])
+            
+            # Algorithms
+            if "algorithms" in analysis:
+                all_algorithms.extend(analysis["algorithms"])
+            
+            # Hyperparameters
+            if "hyperparameters" in analysis:
+                all_hyperparams.update(analysis["hyperparameters"])
+            
+            # Datasets
+            if "datasets" in analysis:
+                all_datasets.update(analysis["datasets"])
+            
+            # Metrics
+            if "evaluation_metrics" in analysis:
+                all_metrics.update(analysis["evaluation_metrics"])
+            
+            # Implementation notes
+            if "implementation_notes" in analysis:
+                all_implementation_notes.extend(analysis["implementation_notes"])
+            
+            # Key insights
+            if "key_insights" in analysis:
+                all_insights.extend(analysis["key_insights"])
+        
+        # Populate consolidated result
+        consolidated.mathematical_formulations = all_math_formulations
+        consolidated.algorithms = all_algorithms
+        consolidated.hyperparameters = all_hyperparams
+        consolidated.datasets_used = list(all_datasets)
+        consolidated.evaluation_metrics = list(all_metrics)
+        consolidated.implementation_notes = all_implementation_notes
+        
+        # Processing stats
+        consolidated.processing_stats = {
+            "total_chunks_processed": len(chunk_analyses),
+            "successful_analyses": len([a for a in chunk_analyses if "error" not in a]),
+            "failed_analyses": len([a for a in chunk_analyses if "error" in a]),
+            "total_formulations": len(all_math_formulations),
+            "total_algorithms": len(all_algorithms),
+            "total_hyperparameters": len(all_hyperparams),
+            "total_datasets": len(all_datasets),
+            "total_metrics": len(all_metrics)
+        }
+        
+        return consolidated
+    
+    async def extract_from_pdf(self, pdf_path: Union[str, Path]) -> ExtractedPaperContent:
+        """Main method to extract content from PDF."""
+        pdf_path = Path(pdf_path)
+        self.logger.info(f"Starting advanced extraction from: {pdf_path}")
+        
+        # Check for existing progress
+        progress_file = pdf_path.parent / f"{pdf_path.stem}_progress.json"
+        if self.config.resume_on_failure and progress_file.exists():
+            self.logger.info("Found existing progress, attempting to resume...")
+            try:
+                with open(progress_file, 'r') as f:
+                    progress = json.load(f)
+                # TODO: Implement resume logic
+            except Exception as e:
+                self.logger.warning(f"Failed to load progress: {e}")
+        
+        try:
+            # Step 1: Extract text from PDF
+            full_text, extraction_stats = self.extract_text_from_pdf(pdf_path)
+            
+            # Step 2: Create text chunks
+            chunks = self.create_text_chunks(full_text)
+            
+            # Step 3: Analyze chunks with progress bar
+            chunk_analyses = []
+            
+            with tqdm(total=len(chunks), desc="Analyzing chunks") as pbar:
+                for chunk in chunks:
+                    analysis = await self.analyze_chunk(chunk)
+                    chunk_analyses.append(analysis)
+                    chunk.processed = True
+                    chunk.analysis_result = analysis
+                    pbar.update(1)
+                    
+                    # Save intermediate progress
+                    if self.config.save_intermediate:
+                        progress_data = {
+                            "processed_chunks": len([c for c in chunks if c.processed]),
+                            "total_chunks": len(chunks),
+                            "last_processed": chunk.chunk_id,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        with open(progress_file, 'w') as f:
+                            json.dump(progress_data, f, indent=2)
+            
+            # Step 4: Consolidate results
+            result = self.consolidate_analyses(chunk_analyses)
+            
+            # Add basic metadata
+            result.full_text = full_text
+            result.processing_stats.update(extraction_stats)
+            
+            # Clean up progress file
+            if progress_file.exists():
+                progress_file.unlink()
+            
+            self.logger.info("Extraction completed successfully!")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Extraction failed: {e}")
+            raise
+
+
+async def main():
+    """Main function for command-line usage."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Advanced Paper Content Extractor")
+    parser.add_argument("pdf_path", help="Path to PDF file")
+    parser.add_argument("--output", "-o", help="Output JSON file", default="extracted_content.json")
+    parser.add_argument("--model", help="OpenRouter model to use", default="anthropic/claude-3-haiku")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    parser.add_argument("--no-cache", action="store_true", help="Disable caching")
+    parser.add_argument("--resume", action="store_true", help="Resume from previous run")
+    
+    args = parser.parse_args()
+    
+    # Load environment
+    load_dotenv()
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        print("Error: OPENROUTER_API_KEY environment variable not set")
+        return
+    
+    # Create config
+    config = ExtractionConfig(
+        openrouter_api_key=api_key,
+        model=args.model,
+        verbose=args.verbose,
+        enable_caching=not args.no_cache,
+        resume_on_failure=args.resume
+    )
+    
+    # Extract content
+    async with AdvancedPaperExtractor(config) as extractor:
+        try:
+            result = await extractor.extract_from_pdf(args.pdf_path)
+            
+            # Save result
+            output_path = Path(args.output)
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(asdict(result), f, indent=2, ensure_ascii=False)
+            
+            print(f"\n✅ Extraction completed successfully!")
+            print(f"📄 Output saved to: {output_path}")
+            print(f"📊 Processing stats:")
+            for key, value in result.processing_stats.items():
+                print(f"   {key}: {value}")
+            
+            print(f"\n🔍 Extracted content summary:")
+            print(f"   Mathematical formulations: {len(result.mathematical_formulations)}")
+            print(f"   Algorithms: {len(result.algorithms)}")
+            print(f"   Hyperparameters: {len(result.hyperparameters)}")
+            print(f"   Datasets: {len(result.datasets_used)}")
+            print(f"   Evaluation metrics: {len(result.evaluation_metrics)}")
+            
+        except Exception as e:
+            print(f"❌ Extraction failed: {e}")
+            return 1
+    
+    return 0
+
 
 if __name__ == "__main__":
-    if not OPENROUTER_API_KEY:
-        raise ValueError("OPENROUTER_API_KEY environment variable not set. Please create a .env file.")
-    if not GITHUB_TOKEN:
-        raise ValueError("GITHUB_TOKEN environment variable not set. Please add it to your .env file.")
-    
-    print("🐕 WATCHDOG Agent Starting...")
-    print(f"📊 Monitoring {len(CATEGORIES)} categories and {len(KEYWORDS)} keywords")
-    print(f"🎯 Target: {TARGET_PAPERS_PER_DOMAIN} unseen papers per domain")
-    print(f"🔍 Max search attempts per domain: {MAX_SEARCH_ATTEMPTS}")
-    print(f"🔄 Syncing with GitHub repo: {GITHUB_USER}/{GITHUB_REPO}")
-    print(f"📁 Files will be organized under: {GITHUB_DATE_FOLDER}")
-    
-    run()
-    
-    print("🐕 WATCHDOG Agent completed successfully!")
+    import sys
+    sys.exit(asyncio.run(main()))
