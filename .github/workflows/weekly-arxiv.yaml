@@ -229,10 +229,13 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         
         if [ -f "managed_repos_state.json" ]; then
-          echo "### � Pcrocessing Results:" >> $GITHUB_STEP_SUMMARY
-          python -c "
+          echo "### 📊 Processing Results:" >> $GITHUB_STEP_SUMMARY
+          
+          # Use a separate Python script to avoid YAML issues
+          cat > process_results.py << 'EOF'
 import json
 import sys
+
 try:
     with open('managed_repos_state.json', 'r') as f:
         data = json.load(f)
@@ -253,7 +256,7 @@ try:
             if repo.get('status') == 'success':
                 url = repo.get('github_url', 'N/A')
                 print(f'- **Individual**: [{name}]({url})')
-                print(f'- **WATCHDOG Backup**: \`projects/{name}/\`')
+                print(f'- **WATCHDOG Backup**: projects/{name}/')
         print('')
     
     if failed > 0:
@@ -267,7 +270,9 @@ try:
         
 except Exception as e:
     print(f'Error reading state file: {e}')
-" >> $GITHUB_STEP_SUMMARY
+EOF
+          
+          python process_results.py >> $GITHUB_STEP_SUMMARY
         else
           echo "No repositories were processed in this batch." >> $GITHUB_STEP_SUMMARY
         fi
@@ -302,7 +307,7 @@ except Exception as e:
     - name: 📥 Checkout Repository
       uses: actions/checkout@v4
     
-    - name: 📥 Download All Results
+    - name: �  Download All Results
       uses: actions/download-artifact@v4
       with:
         path: artifacts/
@@ -317,79 +322,84 @@ except Exception as e:
         echo "**Dual Saving:** Individual repositories + WATCHDOG_memory backups" >> WEEKLY_REPORT.md
         echo "" >> WEEKLY_REPORT.md
         
-        # Consolidate results from all batches
-        total_repos=0
-        total_success=0
-        total_failed=0
-        
-        for batch_dir in artifacts/generation-results-batch-*/; do
-          if [ -f "$batch_dir/managed_repos_state.json" ]; then
-            batch_num=$(echo "$batch_dir" | grep -o 'batch-[0-9]*' | cut -d'-' -f2)
-            echo "## 📦 Batch $batch_num Results" >> WEEKLY_REPORT.md
-            
-            python3 -c "
+        # Create consolidation script
+        cat > consolidate.py << 'EOF'
 import json
-import sys
 import os
-try:
-    with open('$batch_dir/managed_repos_state.json', 'r') as f:
-        data = json.load(f)
-    
-    batch_total = len(data)
-    batch_success = sum(1 for repo in data.values() if repo.get('status') == 'success')
-    batch_failed = sum(1 for repo in data.values() if repo.get('status') == 'failed')
-    
-    print(f'- Repositories processed: {batch_total}')
-    print(f'- Individual repos created: {batch_success}')
-    print(f'- WATCHDOG_memory backups: {batch_success}')
-    print(f'- Failed: {batch_failed}')
-    print('')
-    
-    # Save successful repos
-    for name, repo in data.items():
-        if repo.get('status') == 'success':
-            url = repo.get('github_url', 'N/A')
-            with open('successful_repos.txt', 'a') as f:
-                f.write(f'{name}|{url}\n')
-    
-    # Save failed repos
-    for name, repo in data.items():
-        if repo.get('status') == 'failed':
-            errors = repo.get('errors', [])
-            error_msg = errors[-1] if errors else 'Unknown error'
-            with open('failed_repos.txt', 'a') as f:
-                f.write(f'{name}|{error_msg}\n')
-    
-    # Output stats for shell
-    print(f'BATCH_TOTAL={batch_total}', file=sys.stderr)
-    print(f'BATCH_SUCCESS={batch_success}', file=sys.stderr)
-    print(f'BATCH_FAILED={batch_failed}', file=sys.stderr)
-    
-except Exception as e:
-    print(f'Error processing batch: {e}')
-" 2>batch_stats.txt >> WEEKLY_REPORT.md
+import sys
+
+total_repos = 0
+total_success = 0
+total_failed = 0
+
+# Process each batch
+for batch_dir in os.listdir('artifacts'):
+    if batch_dir.startswith('generation-results-batch-'):
+        state_file = os.path.join('artifacts', batch_dir, 'managed_repos_state.json')
+        if os.path.exists(state_file):
+            batch_num = batch_dir.split('-')[-1]
+            print(f"## 📦 Batch {batch_num} Results")
             
-            # Read batch stats
-            if [ -f "batch_stats.txt" ]; then
-              source batch_stats.txt 2>/dev/null || true
-              total_repos=$((total_repos + ${BATCH_TOTAL:-0}))
-              total_success=$((total_success + ${BATCH_SUCCESS:-0}))
-              total_failed=$((total_failed + ${BATCH_FAILED:-0}))
-              rm -f batch_stats.txt
-            fi
-          fi
-        done
+            try:
+                with open(state_file, 'r') as f:
+                    data = json.load(f)
+                
+                batch_total = len(data)
+                batch_success = sum(1 for repo in data.values() if repo.get('status') == 'success')
+                batch_failed = sum(1 for repo in data.values() if repo.get('status') == 'failed')
+                
+                print(f'- Repositories processed: {batch_total}')
+                print(f'- Individual repos created: {batch_success}')
+                print(f'- WATCHDOG_memory backups: {batch_success}')
+                print(f'- Failed: {batch_failed}')
+                print('')
+                
+                # Save successful repos
+                for name, repo in data.items():
+                    if repo.get('status') == 'success':
+                        url = repo.get('github_url', 'N/A')
+                        with open('successful_repos.txt', 'a') as f:
+                            f.write(f'{name}|{url}\n')
+                
+                # Save failed repos
+                for name, repo in data.items():
+                    if repo.get('status') == 'failed':
+                        errors = repo.get('errors', [])
+                        error_msg = errors[-1] if errors else 'Unknown error'
+                        with open('failed_repos.txt', 'a') as f:
+                            f.write(f'{name}|{error_msg}\n')
+                
+                total_repos += batch_total
+                total_success += batch_success
+                total_failed += batch_failed
+                
+            except Exception as e:
+                print(f'Error processing batch: {e}')
+
+# Print totals for shell script
+print(f"TOTAL_REPOS={total_repos}", file=sys.stderr)
+print(f"TOTAL_SUCCESS={total_success}", file=sys.stderr)
+print(f"TOTAL_FAILED={total_failed}", file=sys.stderr)
+EOF
+        
+        # Run consolidation
+        python consolidate.py 2>totals.txt >> WEEKLY_REPORT.md
+        
+        # Read totals
+        if [ -f "totals.txt" ]; then
+          source totals.txt 2>/dev/null || true
+        fi
         
         # Overall summary
         echo "" >> WEEKLY_REPORT.md
         echo "## 🎯 Overall Summary" >> WEEKLY_REPORT.md
-        echo "- **Total Repositories:** $total_repos" >> WEEKLY_REPORT.md
-        echo "- **Individual Repos Created:** $total_success" >> WEEKLY_REPORT.md
-        echo "- **WATCHDOG_memory Backups:** $total_success" >> WEEKLY_REPORT.md
-        echo "- **Failed:** $total_failed" >> WEEKLY_REPORT.md
+        echo "- **Total Repositories:** ${TOTAL_REPOS:-0}" >> WEEKLY_REPORT.md
+        echo "- **Individual Repos Created:** ${TOTAL_SUCCESS:-0}" >> WEEKLY_REPORT.md
+        echo "- **WATCHDOG_memory Backups:** ${TOTAL_SUCCESS:-0}" >> WEEKLY_REPORT.md
+        echo "- **Failed:** ${TOTAL_FAILED:-0}" >> WEEKLY_REPORT.md
         
-        if [ $total_repos -gt 0 ]; then
-          success_rate=$((total_success * 100 / total_repos))
+        if [ "${TOTAL_REPOS:-0}" -gt 0 ]; then
+          success_rate=$(( TOTAL_SUCCESS * 100 / TOTAL_REPOS ))
           echo "- **Success Rate:** ${success_rate}%" >> WEEKLY_REPORT.md
         fi
         
