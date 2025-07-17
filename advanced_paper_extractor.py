@@ -40,7 +40,7 @@ class ExtractionConfig:
     """Configuration for complete paper extraction and filtering process."""
     # OpenRouter API settings
     openrouter_api_key: str
-    model: str = "tngtech/deepseek-r1t2-chimera:free"  # Cheaper model for free tier
+    model: str = "anthropic/claude-3-haiku"  # Cheaper model for free tier
     temperature: float = 0.1
     max_tokens: int = 4000
     
@@ -909,7 +909,8 @@ Respond with JSON:
                         extracted_content.processing_stats["relevance_reasoning"] = reasoning
                         
                         # Save to JSON
-                        json_filename = f"{paper_info['id']}_{re.sub(r'[^\w\s-]', '', paper_info['title'])[:50]}.json"
+                        clean_title = re.sub(r'[^\w\s-]', '', paper_info['title'])[:50]
+                        json_filename = f"{paper_info['id']}_{clean_title}.json"
                         json_filename = re.sub(r'[-\s]+', '_', json_filename)
                         json_path = self.config.json_output_dir / json_filename
                         
