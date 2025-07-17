@@ -146,126 +146,11 @@ jobs:
           relevant_json/
         retention-days: 1
 
-  # Job 2: Extract content from PDFs
-  extract-content:
-    name: 🔬 Extract Paper Content
-    runs-on: ubuntu-latest
-    needs: fetch-papers
-    if: needs.fetch-papers.outputs.should-process == 'true'
-    timeout-minutes: 90
-    
-    strategy:
-      fail-fast: false
-      matrix:
-        batch: [1, 2]  # Process in 2 batches to avoid timeouts
-    
-    steps:
-    - name: 📥 Checkout Repository
-      uses: actions/checkout@v4
-    
-    - name: 🐍 Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-        cache: 'pip'
-    
-    - name: 📦 Install Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-    
-    - name: 📥 Download Papers
-      uses: actions/download-artifact@v4
-      with:
-        name: papers-to-process
-        path: .
-    
-    - name: 🔬 Extract Content from PDFs
-      env:
-        OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        BATCH_NUMBER: ${{ matrix.batch }}
-        MAX_PAPERS: ${{ github.event.inputs.max_papers || env.MAX_PAPERS_DEFAULT }}
-        SPECIFIC_DOMAIN: ${{ github.event.inputs.specific_domain }}
-        FORCE_REPROCESS: ${{ github.event.inputs.force_reprocess }}
-      run: |
-        echo "🔬 Starting content extraction (Batch ${{ matrix.batch }})"
-        
-        # Create necessary directories
-        mkdir -p extraction_cache logs
-        
-        # Calculate papers per batch
-        max_papers=${MAX_PAPERS:-3}
-        papers_per_batch=$((max_papers / 2 + 1))
-        
-        echo "📊 Processing parameters:"
-        echo "   Max papers total: $max_papers"
-        echo "   Papers per batch: $papers_per_batch"
-        echo "   Current batch: $BATCH_NUMBER"
-        echo "   Specific domain: ${SPECIFIC_DOMAIN:-'all'}"
-        echo "   Force reprocess: ${FORCE_REPROCESS:-'false'}"
-        
-        # Process PDFs in this batch
-        processed=0
-        batch_start=$(( (BATCH_NUMBER - 1) * papers_per_batch ))
-        
-        if [ -d "relevant_pdfs" ] && [ "$(ls -A relevant_pdfs/*.pdf 2>/dev/null)" ]; then
-          echo "📄 Processing PDFs..."
-          
-          for pdf in relevant_pdfs/*.pdf; do
-            if [ ! -f "$pdf" ]; then continue; fi
-            
-            # Skip if not in this batch
-            current_index=$(( processed + batch_start ))
-            if [ $processed -ge $papers_per_batch ]; then
-              break
-            fi
-            
-            filename=$(basename "$pdf" .pdf)
-            output_file="relevant_json/${filename}_extracted.json"
-            
-            # Skip if already processed (unless force reprocess)
-            if [ -f "$output_file" ] && [ "$FORCE_REPROCESS" != "true" ]; then
-              echo "⏭️  Skipping $filename (already processed)"
-              continue
-            fi
-            
-            echo "🔍 Processing: $filename"
-            
-            # Run the advanced extractor
-            if python advanced_paper_extractor.py "$pdf" --output "$output_file" --verbose; then
-              echo "✅ Successfully extracted: $filename"
-              processed=$((processed + 1))
-            else
-              echo "❌ Failed to extract: $filename"
-            fi
-            
-            # Rate limiting - wait between papers
-            if [ $processed -lt $papers_per_batch ]; then
-              echo "⏳ Waiting 30 seconds before next paper..."
-              sleep 30
-            fi
-          done
-        else
-          echo "📄 No PDFs found to process"
-        fi
-        
-        echo "📊 Batch $BATCH_NUMBER completed: $processed papers processed"
-    
-    - name: 📤 Upload Extracted Content
-      uses: actions/upload-artifact@v4
-      with:
-        name: extracted-content-batch-${{ matrix.batch }}
-        path: |
-          relevant_json/
-          logs/
-          extraction_cache/
-        retention-days: 7
-
-  # Job 3: Generate repositories
+  # Job 2: Generate repositories (simplified - no separate extraction)
   generate-repositories:
     name: 🏗️ Generate GitHub Repositories
     runs-on: ubuntu-latest
-    needs: [fetch-papers, extract-content]
+    needs: fetch-papers
     if: needs.fetch-papers.outputs.should-process == 'true'
     timeout-minutes: ${{ fromJson(env.PROCESSING_TIMEOUT) }}
     
@@ -291,10 +176,10 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     
-    - name: 📥 Download Extracted Content
+    - name: 📥 Download Papers
       uses: actions/download-artifact@v4
       with:
-        name: extracted-content-batch-${{ matrix.batch }}
+        name: papers-to-process
         path: .
     
     - name: ⚙️ Configure Git
@@ -302,7 +187,7 @@ jobs:
         git config --global user.name "M1-Evo-Agent[bot]"
         git config --global user.email "m1-evo-agent@users.noreply.github.com"
     
-    - name: 🏗️ Generate Repositories
+    - name: 🏗️ Generate Repositories with Dual Saving
       env:
         OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
@@ -312,7 +197,8 @@ jobs:
         DRY_RUN: ${{ github.event.inputs.dry_run }}
         MAX_PAPERS: ${{ github.event.inputs.max_papers || env.MAX_PAPERS_DEFAULT }}
       run: |
-        echo "🏗️ Starting repository generation (Batch ${{ matrix.batch }})"
+        echo "🏗️ Starting dual repository generation (Batch ${{ matrix.batch }})"
+        echo "✅ Individual repos + 💾 WATCHDOG_memory backups"
         
         # Create necessary directories
         mkdir -p workspace logs llm_interactions cache
@@ -331,18 +217,19 @@ jobs:
         cmd_args="$cmd_args --max-papers $papers_per_batch"
         
         echo "🚀 Running M1-Evo Agent with args: $cmd_args"
+        echo "📊 Processing up to $papers_per_batch papers in batch ${{ matrix.batch }}"
         
-        # Run the main agent
+        # Run the main agent (creates individual repos + WATCHDOG_memory backups)
         python fix2.py $cmd_args
     
     - name: 📊 Generate Batch Report
       if: always()
       run: |
-        echo "## 🏗️ Repository Generation Report (Batch ${{ matrix.batch }})" >> $GITHUB_STEP_SUMMARY
+        echo "## 🏗️ Dual Repository Generation Report (Batch ${{ matrix.batch }})" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
         if [ -f "managed_repos_state.json" ]; then
-          echo "### 📊 Processing Results:" >> $GITHUB_STEP_SUMMARY
+          echo "### � Pcrocessing Results:" >> $GITHUB_STEP_SUMMARY
           python -c "
 import json
 import sys
@@ -355,16 +242,18 @@ try:
     failed = sum(1 for repo in data.values() if repo.get('status') == 'failed')
     
     print(f'- **Total repositories processed:** {total}')
-    print(f'- **Successfully created:** {success}')
+    print(f'- **Individual repos created:** {success}')
+    print(f'- **WATCHDOG_memory backups:** {success}')
     print(f'- **Failed:** {failed}')
     print('')
     
     if success > 0:
-        print('### ✅ Successfully Created Repositories:')
+        print('### ✅ Successfully Created (Individual + WATCHDOG_memory):')
         for name, repo in data.items():
             if repo.get('status') == 'success':
                 url = repo.get('github_url', 'N/A')
-                print(f'- [{name}]({url})')
+                print(f'- **Individual**: [{name}]({url})')
+                print(f'- **WATCHDOG Backup**: \`projects/{name}/\`')
         print('')
     
     if failed > 0:
@@ -386,6 +275,7 @@ except Exception as e:
         # Add processing stats
         echo "### 📈 Processing Statistics:" >> $GITHUB_STEP_SUMMARY
         echo "- **Batch Number:** ${{ matrix.batch }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Dual Saving:** Individual repos + WATCHDOG_memory backups" >> $GITHUB_STEP_SUMMARY
         echo "- **Dry Run Mode:** ${{ github.event.inputs.dry_run || 'false' }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Processing Time:** $(date -u)" >> $GITHUB_STEP_SUMMARY
     
@@ -401,11 +291,11 @@ except Exception as e:
           managed_repos_state.json
         retention-days: 30
 
-  # Job 4: Consolidate and report
+  # Job 3: Consolidate and report
   consolidate-results:
     name: 📋 Consolidate Results
     runs-on: ubuntu-latest
-    needs: [fetch-papers, extract-content, generate-repositories]
+    needs: [fetch-papers, generate-repositories]
     if: always() && needs.fetch-papers.outputs.should-process == 'true'
     
     steps:
@@ -424,14 +314,13 @@ except Exception as e:
         echo "**Generated:** $(date -u)" >> WEEKLY_REPORT.md
         echo "**Trigger:** ${{ github.event_name }}" >> WEEKLY_REPORT.md
         echo "**Papers Found:** ${{ needs.fetch-papers.outputs.papers-found }}" >> WEEKLY_REPORT.md
+        echo "**Dual Saving:** Individual repositories + WATCHDOG_memory backups" >> WEEKLY_REPORT.md
         echo "" >> WEEKLY_REPORT.md
         
         # Consolidate results from all batches
         total_repos=0
         total_success=0
         total_failed=0
-        successful_repos=()
-        failed_repos=()
         
         for batch_dir in artifacts/generation-results-batch-*/; do
           if [ -f "$batch_dir/managed_repos_state.json" ]; then
@@ -451,7 +340,8 @@ try:
     batch_failed = sum(1 for repo in data.values() if repo.get('status') == 'failed')
     
     print(f'- Repositories processed: {batch_total}')
-    print(f'- Successful: {batch_success}')
+    print(f'- Individual repos created: {batch_success}')
+    print(f'- WATCHDOG_memory backups: {batch_success}')
     print(f'- Failed: {batch_failed}')
     print('')
     
@@ -494,7 +384,8 @@ except Exception as e:
         echo "" >> WEEKLY_REPORT.md
         echo "## 🎯 Overall Summary" >> WEEKLY_REPORT.md
         echo "- **Total Repositories:** $total_repos" >> WEEKLY_REPORT.md
-        echo "- **Successfully Created:** $total_success" >> WEEKLY_REPORT.md
+        echo "- **Individual Repos Created:** $total_success" >> WEEKLY_REPORT.md
+        echo "- **WATCHDOG_memory Backups:** $total_success" >> WEEKLY_REPORT.md
         echo "- **Failed:** $total_failed" >> WEEKLY_REPORT.md
         
         if [ $total_repos -gt 0 ]; then
@@ -505,9 +396,13 @@ except Exception as e:
         # List successful repositories
         if [ -f "successful_repos.txt" ] && [ -s "successful_repos.txt" ]; then
           echo "" >> WEEKLY_REPORT.md
-          echo "## ✅ Successfully Created Repositories:" >> WEEKLY_REPORT.md
+          echo "## ✅ Successfully Created:" >> WEEKLY_REPORT.md
+          echo "" >> WEEKLY_REPORT.md
           while IFS='|' read -r name url; do
-            echo "- [$name]($url)" >> WEEKLY_REPORT.md
+            echo "### 📁 $name" >> WEEKLY_REPORT.md
+            echo "- **Individual Repository**: [$name]($url)" >> WEEKLY_REPORT.md
+            echo "- **WATCHDOG_memory Backup**: \`projects/$name/\`" >> WEEKLY_REPORT.md
+            echo "" >> WEEKLY_REPORT.md
           done < successful_repos.txt
         fi
         
@@ -522,7 +417,7 @@ except Exception as e:
         
         echo "" >> WEEKLY_REPORT.md
         echo "---" >> WEEKLY_REPORT.md
-        echo "*Generated by M1-Evo Maintainer Agent*" >> WEEKLY_REPORT.md
+        echo "*Generated by M1-Evo Maintainer Agent with Dual Saving*" >> WEEKLY_REPORT.md
     
     - name: 📤 Upload Final Report
       uses: actions/upload-artifact@v4
@@ -537,7 +432,7 @@ except Exception as e:
         echo "" >> $GITHUB_STEP_SUMMARY
         cat WEEKLY_REPORT.md >> $GITHUB_STEP_SUMMARY
 
-  # Job 5: Cleanup old artifacts
+  # Job 4: Cleanup old artifacts
   cleanup:
     name: 🧹 Cleanup
     runs-on: ubuntu-latest
