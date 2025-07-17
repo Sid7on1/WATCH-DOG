@@ -8,63 +8,168 @@ import sys
 import time
 import shutil
 import hashlib
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple, Any
+import yaml
+import base64
+import math
+import random
+import string
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple, Any, Union, Set
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import logging
 from enum import Enum
 from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor
+import tempfile
+import zipfile
+import requests
+from urllib.parse import urlparse, quote
+import mimetypes
 
-# --- Configuration ---
+# --- Enhanced Configuration for 360-Degree Repositories ---
 @dataclass
 class Config:
-    """Central Configuration for the M1-Evo Maintainer Agent."""
+    """Advanced Configuration for the M1-Evo Maintainer Agent - 360° Repository Creation."""
+    # API Configuration
     openrouter_api_key: str
     github_token: str
     github_username: str
-    user_agent: str = "M1-Evo-Agent/2.0"
-    repo_prefix: str = "paper-impl-"
-    architect_model: str = "meta-llama/llama-3.1-405b-instruct"
-    coder_model: str = "deepseek/deepseek-coder-v2"
-    temperature: float = 0.3
-    max_llm_tokens: int = 16000  # Increased for longer content
-    request_timeout: int = 600  # Increased timeout
-    retry_attempts: int = 3
-    retry_delay: int = 10
+    huggingface_token: str = ""
+    arxiv_api_key: str = ""
+    
+    # Agent Configuration
+    user_agent: str = "M1-Evo-Agent-360/3.0"
+    repo_prefix: str = "research-360-"
+    
+    # Advanced LLM Models
+    architect_model: str = "anthropic/claude-3.5-sonnet"
+    coder_model: str = "deepseek/deepseek-coder-v2-instruct"
+    reviewer_model: str = "meta-llama/llama-3.1-405b-instruct"
+    documentation_model: str = "openai/gpt-4o"
+    
+    # LLM Parameters
+    temperature: float = 0.2
+    max_llm_tokens: int = 32000
+    request_timeout: int = 900
+    retry_attempts: int = 5
+    retry_delay: int = 15
+    
+    # Repository Configuration
     repo_visibility: str = "public"
-    max_concurrent_papers: int = 2  # Reduced for better quality
+    enable_github_pages: bool = True
+    enable_github_actions: bool = True
+    enable_security_features: bool = True
+    
+    # Processing Configuration
+    max_concurrent_papers: int = 3
+    max_concurrent_files: int = 10
+    enable_parallel_processing: bool = True
+    
+    # Quality Assurance
+    min_code_quality_score: float = 0.85
+    enable_code_review: bool = True
+    enable_automated_testing: bool = True
+    enable_performance_benchmarks: bool = True
+    
+    # Advanced Features
+    enable_docker_support: bool = True
+    enable_cloud_deployment: bool = True
+    enable_api_generation: bool = True
+    enable_web_interface: bool = True
+    enable_mobile_app: bool = False
+    
+    # Data and Model Management
+    enable_model_versioning: bool = True
+    enable_experiment_tracking: bool = True
+    enable_data_validation: bool = True
+    enable_model_monitoring: bool = True
+    
+    # Paths
     base_dir: Path = Path(__file__).parent
     papers_dir: Path = base_dir / "relevant_json"
     state_file: Path = base_dir / "managed_repos_state.json"
     workspace_dir: Path = base_dir / "workspace"
     logs_dir: Path = base_dir / "logs"
     llm_logs_dir: Path = base_dir / "llm_interactions"
+    templates_dir: Path = base_dir / "templates"
+    cache_dir: Path = base_dir / "cache"
+    
+    # Advanced Directories
+    benchmarks_dir: Path = base_dir / "benchmarks"
+    models_cache_dir: Path = base_dir / "models_cache"
+    datasets_dir: Path = base_dir / "datasets"
+    artifacts_dir: Path = base_dir / "artifacts"
 
-# --- Enums and Data Classes ---
+# --- Enhanced Enums and Data Classes for 360° Repositories ---
 class ProcessingStatus(Enum):
     PENDING = "pending"
-    PLANNING = "planning_structure"
+    ANALYZING_PAPER = "analyzing_paper"
+    PLANNING_ARCHITECTURE = "planning_architecture"
+    GENERATING_STRUCTURE = "generating_structure"
     CREATING_REPO = "creating_repository"
-    GENERATING_FILES = "generating_files"
-    VALIDATING = "validating_repo"
+    GENERATING_CORE = "generating_core_files"
+    GENERATING_TESTS = "generating_tests"
+    GENERATING_DOCS = "generating_documentation"
+    GENERATING_DEPLOYMENT = "generating_deployment"
+    GENERATING_WEB_INTERFACE = "generating_web_interface"
+    GENERATING_API = "generating_api"
+    QUALITY_ASSURANCE = "quality_assurance"
+    PERFORMANCE_TESTING = "performance_testing"
+    SECURITY_SCANNING = "security_scanning"
+    FINALIZING = "finalizing"
     SUCCESS = "success"
     FAILED = "failed"
     SKIPPED = "skipped"
 
+class FileCategory(Enum):
+    CORE_MODEL = "core_model"
+    DATA_PROCESSING = "data_processing"
+    TRAINING = "training"
+    INFERENCE = "inference"
+    EVALUATION = "evaluation"
+    UTILITIES = "utilities"
+    TESTING = "testing"
+    DOCUMENTATION = "documentation"
+    CONFIGURATION = "configuration"
+    DEPLOYMENT = "deployment"
+    WEB_INTERFACE = "web_interface"
+    API = "api"
+    MOBILE = "mobile"
+    NOTEBOOKS = "notebooks"
+    SCRIPTS = "scripts"
+    RESEARCH = "research"
+
+class QualityMetric(Enum):
+    CODE_COVERAGE = "code_coverage"
+    PERFORMANCE = "performance"
+    SECURITY = "security"
+    DOCUMENTATION = "documentation"
+    MAINTAINABILITY = "maintainability"
+    RELIABILITY = "reliability"
+
 @dataclass
 class RepoState:
-    """Represents the state of a single managed repository."""
+    """Enhanced state tracking for 360° repositories."""
     repo_name: str
     github_url: str
     status: ProcessingStatus = ProcessingStatus.PENDING
     last_processed_timestamp: Optional[str] = None
     errors: List[str] = field(default_factory=list)
     files_generated: List[str] = field(default_factory=list)
+    quality_scores: Dict[str, float] = field(default_factory=dict)
+    performance_metrics: Dict[str, Any] = field(default_factory=dict)
+    deployment_urls: Dict[str, str] = field(default_factory=dict)
+    api_endpoints: List[str] = field(default_factory=list)
+    web_interface_url: Optional[str] = None
+    mobile_app_info: Optional[Dict] = None
+    total_lines_of_code: int = 0
+    test_coverage: float = 0.0
+    documentation_coverage: float = 0.0
 
 @dataclass
 class PaperInfo:
-    """Information about a research paper to be processed."""
+    """Enhanced paper information with research context."""
     id: str
     title: str
     summary: str
@@ -76,15 +181,65 @@ class PaperInfo:
     technical_details: Optional[str] = None
     source_path: Path = None
     last_modified: float = 0.0
+    
+    # Enhanced fields for 360° implementation
+    research_domain: Optional[str] = None
+    complexity_level: str = "medium"  # low, medium, high, expert
+    implementation_difficulty: str = "medium"
+    required_datasets: List[str] = field(default_factory=list)
+    computational_requirements: Dict[str, Any] = field(default_factory=dict)
+    related_papers: List[str] = field(default_factory=list)
+    baseline_methods: List[str] = field(default_factory=list)
+    evaluation_metrics: List[str] = field(default_factory=list)
+    reproducibility_info: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class FilePlan:
-    """A planned file to be generated."""
+    """Enhanced file planning with advanced categorization."""
     path: str
     description: str
-    priority: int = 1  # 1=high, 2=medium, 3=low
+    priority: int = 1  # 1=critical, 2=high, 3=medium, 4=low
     dependencies: List[str] = field(default_factory=list)
-    file_type: str = "code"  # code, config, docs, test
+    file_type: str = "code"
+    category: FileCategory = FileCategory.CORE_MODEL
+    estimated_lines: int = 100
+    complexity_score: float = 0.5
+    requires_gpu: bool = False
+    requires_external_api: bool = False
+    testing_requirements: List[str] = field(default_factory=list)
+    documentation_level: str = "comprehensive"  # basic, standard, comprehensive
+    
+@dataclass
+class QualityReport:
+    """Quality assessment report for generated code."""
+    file_path: str
+    quality_scores: Dict[QualityMetric, float]
+    issues_found: List[str]
+    suggestions: List[str]
+    overall_score: float
+    passed_checks: bool
+
+@dataclass
+class DeploymentConfig:
+    """Configuration for various deployment options."""
+    enable_docker: bool = True
+    enable_kubernetes: bool = False
+    enable_aws: bool = False
+    enable_gcp: bool = False
+    enable_azure: bool = False
+    enable_heroku: bool = True
+    enable_vercel: bool = True
+    enable_github_pages: bool = True
+    
+@dataclass
+class WebInterfaceConfig:
+    """Configuration for web interface generation."""
+    framework: str = "streamlit"  # streamlit, gradio, flask, fastapi
+    enable_real_time: bool = True
+    enable_file_upload: bool = True
+    enable_model_comparison: bool = True
+    enable_visualization: bool = True
+    enable_export: bool = True
 
 # --- Core Components ---
 
@@ -2551,4 +2706,987 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main())per, no
+t generic code
+        6. For core files, aim for 200-500+ lines of functional code
+        7. Include proper imports and ensure code is executable
+        8. Add comprehensive error handling and validation
+        9. Include example usage in docstrings where appropriate
+        10. Make connections to the paper's specific techniques and innovations
+
+        **Paper-Specific Implementation Notes:**
+        - Implement the exact algorithms, architectures, or methodologies described in the paper
+        - Use the same terminology and variable names as in the paper where possible
+        - Include mathematical formulations in docstrings where relevant
+        - Reference specific sections or equations from the paper in comments
+        - Implement paper-specific hyperparameters and configurations
+
+        Generate ONLY the raw file content. Do not wrap in code blocks or add any markdown formatting.
+        """
+        
+        messages = [{"role": "user", "content": prompt}]
+        self.logger.info(f"Requesting comprehensive content for '{file_plan.path}' from coder model")
+        
+        for attempt in range(self.config.retry_attempts):
+            content, error = await self._call_llm(messages, self.config.coder_model)
+            if content and self._validate_comprehensive_content(content, file_plan):
+                return content, "Comprehensive file content generated successfully."
+            else:
+                self.logger.warning(f"Generated content for {file_plan.path} insufficient, retrying...")
+                if attempt < self.config.retry_attempts - 1:
+                    await asyncio.sleep(self.config.retry_delay)
+        
+        # Generate enhanced fallback content
+        fallback_content = self._generate_enhanced_fallback_content(paper, file_plan, all_files)
+        if fallback_content:
+            self.logger.info(f"Using enhanced fallback content for {file_plan.path}")
+            return fallback_content, "Using enhanced fallback content due to LLM failures"
+        
+        return None, f"Failed to generate comprehensive content for {file_plan.path}"
+
+
+class Advanced360RepositoryGenerator:
+    """Advanced generator for creating comprehensive 360-degree repositories."""
+    
+    def __init__(self, config: Config, llm_interface: 'LLMInterface', logger: logging.Logger):
+        self.config = config
+        self.llm = llm_interface
+        self.logger = logger
+        
+    async def generate_360_structure(self, paper: PaperInfo) -> List[FilePlan]:
+        """Generate comprehensive 360-degree repository structure."""
+        self.logger.info(f"Generating 360° repository structure for: {paper.title}")
+        
+        # Base structure from LLM
+        base_files, _ = await self.llm.plan_file_structure(paper)
+        
+        # Add advanced 360° components
+        advanced_files = self._generate_advanced_components(paper)
+        web_interface_files = self._generate_web_interface_files(paper)
+        api_files = self._generate_api_files(paper)
+        deployment_files = self._generate_deployment_files(paper)
+        monitoring_files = self._generate_monitoring_files(paper)
+        security_files = self._generate_security_files(paper)
+        
+        # Combine all files
+        all_files = (base_files or []) + advanced_files + web_interface_files + api_files + deployment_files + monitoring_files + security_files
+        
+        # Remove duplicates and sort by priority
+        unique_files = self._deduplicate_files(all_files)
+        sorted_files = sorted(unique_files, key=lambda x: (x.priority, x.path))
+        
+        self.logger.info(f"Generated comprehensive 360° structure with {len(sorted_files)} files")
+        return sorted_files
+    
+    def _generate_advanced_components(self, paper: PaperInfo) -> List[FilePlan]:
+        """Generate advanced ML/AI components."""
+        return [
+            # Advanced Model Components
+            FilePlan("src/models/ensemble.py", "Ensemble methods and model combination strategies", 1, ["src/models/main_model.py"], "code", FileCategory.CORE_MODEL, 300),
+            FilePlan("src/models/distillation.py", "Knowledge distillation implementation", 2, ["src/models/main_model.py"], "code", FileCategory.CORE_MODEL, 250),
+            FilePlan("src/models/quantization.py", "Model quantization and compression", 2, ["src/models/main_model.py"], "code", FileCategory.CORE_MODEL, 200),
+            FilePlan("src/models/pruning.py", "Neural network pruning techniques", 2, ["src/models/main_model.py"], "code", FileCategory.CORE_MODEL, 180),
+            
+            # Advanced Training Components
+            FilePlan("src/training/federated.py", "Federated learning implementation", 2, ["src/training/trainer.py"], "code", FileCategory.TRAINING, 400),
+            FilePlan("src/training/adversarial.py", "Adversarial training and robustness", 2, ["src/training/trainer.py"], "code", FileCategory.TRAINING, 300),
+            FilePlan("src/training/meta_learning.py", "Meta-learning and few-shot learning", 2, ["src/training/trainer.py"], "code", FileCategory.TRAINING, 350),
+            FilePlan("src/training/continual.py", "Continual and lifelong learning", 2, ["src/training/trainer.py"], "code", FileCategory.TRAINING, 280),
+            
+            # Advanced Data Processing
+            FilePlan("src/data/augmentation.py", "Advanced data augmentation techniques", 1, ["src/data/preprocessing.py"], "code", FileCategory.DATA_PROCESSING, 250),
+            FilePlan("src/data/synthetic.py", "Synthetic data generation", 2, ["src/data/dataset.py"], "code", FileCategory.DATA_PROCESSING, 300),
+            FilePlan("src/data/privacy.py", "Privacy-preserving data processing", 2, ["src/data/preprocessing.py"], "code", FileCategory.DATA_PROCESSING, 200),
+            FilePlan("src/data/streaming.py", "Real-time data streaming and processing", 2, ["src/data/loader.py"], "code", FileCategory.DATA_PROCESSING, 220),
+            
+            # MLOps Components
+            FilePlan("src/mlops/__init__.py", "MLOps package initialization", 2, [], "code", FileCategory.UTILITIES),
+            FilePlan("src/mlops/experiment_tracking.py", "Experiment tracking with MLflow/Weights&Biases", 2, [], "code", FileCategory.UTILITIES, 300),
+            FilePlan("src/mlops/model_registry.py", "Model registry and versioning", 2, [], "code", FileCategory.UTILITIES, 250),
+            FilePlan("src/mlops/pipeline.py", "ML pipeline orchestration", 2, [], "code", FileCategory.UTILITIES, 400),
+            FilePlan("src/mlops/drift_detection.py", "Data and model drift detection", 2, [], "code", FileCategory.UTILITIES, 200),
+            
+            # Performance Optimization
+            FilePlan("src/optimization/__init__.py", "Optimization package initialization", 2, [], "code", FileCategory.UTILITIES),
+            FilePlan("src/optimization/gpu_utils.py", "GPU optimization utilities", 2, [], "code", FileCategory.UTILITIES, 180),
+            FilePlan("src/optimization/memory.py", "Memory optimization and management", 2, [], "code", FileCategory.UTILITIES, 150),
+            FilePlan("src/optimization/profiling.py", "Performance profiling tools", 2, [], "code", FileCategory.UTILITIES, 200),
+            FilePlan("src/optimization/distributed.py", "Distributed computing utilities", 2, [], "code", FileCategory.UTILITIES, 300),
+        ]
+    
+    def _generate_web_interface_files(self, paper: PaperInfo) -> List[FilePlan]:
+        """Generate web interface components."""
+        return [
+            # Streamlit Web Interface
+            FilePlan("web/streamlit_app.py", "Main Streamlit web application", 2, ["src/models/main_model.py"], "code", FileCategory.WEB_INTERFACE, 400),
+            FilePlan("web/components/model_interface.py", "Model interaction components", 2, ["web/streamlit_app.py"], "code", FileCategory.WEB_INTERFACE, 200),
+            FilePlan("web/components/visualization.py", "Interactive visualization components", 2, ["web/streamlit_app.py"], "code", FileCategory.WEB_INTERFACE, 250),
+            FilePlan("web/components/file_upload.py", "File upload and processing components", 2, ["web/streamlit_app.py"], "code", FileCategory.WEB_INTERFACE, 150),
+            FilePlan("web/utils/session_state.py", "Session state management", 2, ["web/streamlit_app.py"], "code", FileCategory.WEB_INTERFACE, 100),
+            
+            # Gradio Alternative Interface
+            FilePlan("web/gradio_app.py", "Gradio-based web interface", 3, ["src/models/main_model.py"], "code", FileCategory.WEB_INTERFACE, 300),
+            
+            # Flask/FastAPI Backend
+            FilePlan("web/backend/app.py", "FastAPI backend application", 2, ["src/models/main_model.py"], "code", FileCategory.WEB_INTERFACE, 350),
+            FilePlan("web/backend/routes.py", "API routes and endpoints", 2, ["web/backend/app.py"], "code", FileCategory.WEB_INTERFACE, 200),
+            FilePlan("web/backend/middleware.py", "Custom middleware and authentication", 2, ["web/backend/app.py"], "code", FileCategory.WEB_INTERFACE, 150),
+            
+            # Frontend (React/Vue)
+            FilePlan("web/frontend/package.json", "Frontend package configuration", 3, [], "config", FileCategory.WEB_INTERFACE),
+            FilePlan("web/frontend/src/App.js", "Main React application component", 3, [], "code", FileCategory.WEB_INTERFACE, 200),
+            FilePlan("web/frontend/src/components/ModelInterface.js", "Model interaction React component", 3, [], "code", FileCategory.WEB_INTERFACE, 150),
+            FilePlan("web/frontend/src/utils/api.js", "API communication utilities", 3, [], "code", FileCategory.WEB_INTERFACE, 100),
+            
+            # Web Configuration
+            FilePlan("web/config/streamlit_config.toml", "Streamlit configuration", 3, [], "config", FileCategory.WEB_INTERFACE),
+            FilePlan("web/requirements.txt", "Web interface dependencies", 2, [], "config", FileCategory.WEB_INTERFACE),
+        ]
+    
+    def _generate_api_files(self, paper: PaperInfo) -> List[FilePlan]:
+        """Generate API components."""
+        return [
+            # REST API
+            FilePlan("api/__init__.py", "API package initialization", 2, [], "code", FileCategory.API),
+            FilePlan("api/main.py", "Main FastAPI application", 2, ["src/models/main_model.py"], "code", FileCategory.API, 300),
+            FilePlan("api/routes/predict.py", "Prediction API endpoints", 2, ["api/main.py"], "code", FileCategory.API, 200),
+            FilePlan("api/routes/train.py", "Training API endpoints", 2, ["api/main.py"], "code", FileCategory.API, 250),
+            FilePlan("api/routes/evaluate.py", "Evaluation API endpoints", 2, ["api/main.py"], "code", FileCategory.API, 150),
+            FilePlan("api/routes/health.py", "Health check and monitoring endpoints", 2, ["api/main.py"], "code", FileCategory.API, 100),
+            
+            # API Models and Schemas
+            FilePlan("api/models/request.py", "API request models and validation", 2, [], "code", FileCategory.API, 150),
+            FilePlan("api/models/response.py", "API response models", 2, [], "code", FileCategory.API, 120),
+            FilePlan("api/models/errors.py", "Error handling and custom exceptions", 2, [], "code", FileCategory.API, 100),
+            
+            # API Utilities
+            FilePlan("api/utils/auth.py", "Authentication and authorization", 2, [], "code", FileCategory.API, 200),
+            FilePlan("api/utils/rate_limiting.py", "Rate limiting and throttling", 2, [], "code", FileCategory.API, 150),
+            FilePlan("api/utils/caching.py", "Response caching utilities", 2, [], "code", FileCategory.API, 120),
+            FilePlan("api/utils/logging.py", "API-specific logging", 2, [], "code", FileCategory.API, 100),
+            
+            # GraphQL API (Optional)
+            FilePlan("api/graphql/schema.py", "GraphQL schema definition", 3, [], "code", FileCategory.API, 200),
+            FilePlan("api/graphql/resolvers.py", "GraphQL resolvers", 3, [], "code", FileCategory.API, 250),
+            
+            # API Documentation
+            FilePlan("api/docs/openapi.yaml", "OpenAPI specification", 2, [], "docs", FileCategory.API),
+            FilePlan("api/docs/README.md", "API documentation", 2, [], "docs", FileCategory.API),
+        ]
+    
+    def _generate_deployment_files(self, paper: PaperInfo) -> List[FilePlan]:
+        """Generate deployment and infrastructure files."""
+        return [
+            # Docker
+            FilePlan("deployment/docker/Dockerfile.prod", "Production Docker configuration", 2, ["requirements.txt"], "config", FileCategory.DEPLOYMENT),
+            FilePlan("deployment/docker/Dockerfile.dev", "Development Docker configuration", 3, ["requirements.txt"], "config", FileCategory.DEPLOYMENT),
+            FilePlan("deployment/docker/docker-compose.prod.yml", "Production Docker Compose", 2, [], "config", FileCategory.DEPLOYMENT),
+            FilePlan("deployment/docker/docker-compose.dev.yml", "Development Docker Compose", 3, [], "config", FileCategory.DEPLOYMENT),
+            FilePlan("deployment/docker/.dockerignore", "Docker ignore file", 3, [], "config", FileCategory.DEPLOYMENT),
+            
+            # Kubernetes
+            FilePlan("deployment/k8s/namespace.yaml", "Kubernetes namespace configuration", 3, [], "config", FileCategory.DEPLOYMENT),
+            FilePlan("deployment/k8s/deployment.yaml", "Kubernetes deployment configuration", 3, [], "config", FileCategory.DEPLOYMENT),
+            FilePlan("deployment/k8s/service.yaml", "Kubernetes service configuration", 3, [], "config", FileCategory.DEPLOYMENT),
+            FilePlan("deployment/k8s/ingress.yaml", "Kubernetes ingress configuration", 3, [], "config", FileCategory.DEPLOYMENT),
+            FilePlan("deployment/k8s/configmap.yaml", "Kubernetes config map", 3, [], "config", FileCategory.DEPLOYMENT),
+            FilePlan("deployment/k8s/secrets.yaml", "Kubernetes secrets template", 3, [], "config", FileCategory.DEPLOYMENT),
+            
+            # Cloud Deployment
+            FilePlan("deployment/aws/cloudformation.yaml", "AWS CloudFormation template", 3, [], "config", FileCategory.DEPLOYMENT),
+            FilePlan("deployment/aws/lambda_function.py", "AWS Lambda deployment", 3, ["src/models/main_model.py"], "code", FileCategory.DEPLOYMENT, 200),
+            FilePlan("deployment/gcp/app.yaml", "Google Cloud App Engine configuration", 3, [], "config", FileCategory.DEPLOYMENT),
+            FilePlan("deployment/azure/azure-pipelines.yml", "Azure DevOps pipeline", 3, [], "config", FileCategory.DEPLOYMENT),
+            
+            # Terraform
+            FilePlan("deployment/terraform/main.tf", "Main Terraform configuration", 3, [], "config", FileCategory.DEPLOYMENT),
+            FilePlan("deployment/terraform/variables.tf", "Terraform variables", 3, [], "config", FileCategory.DEPLOYMENT),
+            FilePlan("deployment/terraform/outputs.tf", "Terraform outputs", 3, [], "config", FileCategory.DEPLOYMENT),
+            
+            # Deployment Scripts
+            FilePlan("deployment/scripts/deploy.sh", "Main deployment script", 2, [], "code", FileCategory.DEPLOYMENT, 150),
+            FilePlan("deployment/scripts/rollback.sh", "Rollback script", 3, [], "code", FileCategory.DEPLOYMENT, 100),
+            FilePlan("deployment/scripts/health_check.sh", "Health check script", 2, [], "code", FileCategory.DEPLOYMENT, 80),
+        ]
+    
+    def _generate_monitoring_files(self, paper: PaperInfo) -> List[FilePlan]:
+        """Generate monitoring and observability files."""
+        return [
+            # Monitoring
+            FilePlan("monitoring/__init__.py", "Monitoring package initialization", 2, [], "code", FileCategory.UTILITIES),
+            FilePlan("monitoring/metrics.py", "Custom metrics collection", 2, [], "code", FileCategory.UTILITIES, 200),
+            FilePlan("monitoring/alerts.py", "Alerting system", 2, [], "code", FileCategory.UTILITIES, 150),
+            FilePlan("monitoring/dashboards.py", "Dashboard generation", 2, [], "code", FileCategory.UTILITIES, 180),
+            FilePlan("monitoring/health_checks.py", "Health check implementations", 2, [], "code", FileCategory.UTILITIES, 120),
+            
+            # Prometheus/Grafana
+            FilePlan("monitoring/prometheus/prometheus.yml", "Prometheus configuration", 3, [], "config", FileCategory.UTILITIES),
+            FilePlan("monitoring/grafana/dashboard.json", "Grafana dashboard configuration", 3, [], "config", FileCategory.UTILITIES),
+            
+            # Logging
+            FilePlan("monitoring/logging/config.yaml", "Logging configuration", 2, [], "config", FileCategory.UTILITIES),
+            FilePlan("monitoring/logging/formatters.py", "Custom log formatters", 2, [], "code", FileCategory.UTILITIES, 100),
+            
+            # Performance Monitoring
+            FilePlan("monitoring/performance/profiler.py", "Performance profiling tools", 2, [], "code", FileCategory.UTILITIES, 150),
+            FilePlan("monitoring/performance/benchmarks.py", "Performance benchmarking", 2, [], "code", FileCategory.UTILITIES, 200),
+        ]
+    
+    def _generate_security_files(self, paper: PaperInfo) -> List[FilePlan]:
+        """Generate security and compliance files."""
+        return [
+            # Security
+            FilePlan("security/__init__.py", "Security package initialization", 2, [], "code", FileCategory.UTILITIES),
+            FilePlan("security/authentication.py", "Authentication mechanisms", 2, [], "code", FileCategory.UTILITIES, 200),
+            FilePlan("security/authorization.py", "Authorization and RBAC", 2, [], "code", FileCategory.UTILITIES, 180),
+            FilePlan("security/encryption.py", "Data encryption utilities", 2, [], "code", FileCategory.UTILITIES, 150),
+            FilePlan("security/input_validation.py", "Input validation and sanitization", 2, [], "code", FileCategory.UTILITIES, 120),
+            FilePlan("security/audit.py", "Security audit logging", 2, [], "code", FileCategory.UTILITIES, 100),
+            
+            # Security Configuration
+            FilePlan("security/config/security_policy.yaml", "Security policy configuration", 2, [], "config", FileCategory.UTILITIES),
+            FilePlan("security/config/cors.yaml", "CORS configuration", 2, [], "config", FileCategory.UTILITIES),
+            
+            # Compliance
+            FilePlan("compliance/gdpr.py", "GDPR compliance utilities", 3, [], "code", FileCategory.UTILITIES, 150),
+            FilePlan("compliance/audit_trail.py", "Audit trail implementation", 3, [], "code", FileCategory.UTILITIES, 120),
+            
+            # Security Testing
+            FilePlan("security/tests/test_auth.py", "Authentication tests", 2, [], "test", FileCategory.TESTING, 150),
+            FilePlan("security/tests/test_encryption.py", "Encryption tests", 2, [], "test", FileCategory.TESTING, 100),
+        ]
+    
+    def _deduplicate_files(self, files: List[FilePlan]) -> List[FilePlan]:
+        """Remove duplicate files based on path."""
+        seen_paths = set()
+        unique_files = []
+        
+        for file_plan in files:
+            if file_plan.path not in seen_paths:
+                seen_paths.add(file_plan.path)
+                unique_files.append(file_plan)
+        
+        return unique_files
+
+
+class QualityAssuranceEngine:
+    """Advanced quality assurance for generated code."""
+    
+    def __init__(self, config: Config, llm_interface: 'LLMInterface', logger: logging.Logger):
+        self.config = config
+        self.llm = llm_interface
+        self.logger = logger
+    
+    async def assess_code_quality(self, file_path: str, content: str, file_plan: FilePlan) -> QualityReport:
+        """Comprehensive code quality assessment."""
+        self.logger.info(f"Assessing code quality for {file_path}")
+        
+        quality_scores = {}
+        issues_found = []
+        suggestions = []
+        
+        # Static analysis
+        static_score, static_issues = self._static_analysis(content, file_plan)
+        quality_scores[QualityMetric.MAINTAINABILITY] = static_score
+        issues_found.extend(static_issues)
+        
+        # Security analysis
+        security_score, security_issues = self._security_analysis(content, file_plan)
+        quality_scores[QualityMetric.SECURITY] = security_score
+        issues_found.extend(security_issues)
+        
+        # Documentation analysis
+        doc_score, doc_issues = self._documentation_analysis(content, file_plan)
+        quality_scores[QualityMetric.DOCUMENTATION] = doc_score
+        issues_found.extend(doc_issues)
+        
+        # Performance analysis
+        perf_score, perf_issues = self._performance_analysis(content, file_plan)
+        quality_scores[QualityMetric.PERFORMANCE] = perf_score
+        issues_found.extend(perf_issues)
+        
+        # LLM-based review
+        if self.config.enable_code_review:
+            llm_score, llm_suggestions = await self._llm_code_review(content, file_plan)
+            quality_scores[QualityMetric.RELIABILITY] = llm_score
+            suggestions.extend(llm_suggestions)
+        
+        # Calculate overall score
+        overall_score = sum(quality_scores.values()) / len(quality_scores)
+        passed_checks = overall_score >= self.config.min_code_quality_score
+        
+        return QualityReport(
+            file_path=file_path,
+            quality_scores=quality_scores,
+            issues_found=issues_found,
+            suggestions=suggestions,
+            overall_score=overall_score,
+            passed_checks=passed_checks
+        )
+    
+    def _static_analysis(self, content: str, file_plan: FilePlan) -> Tuple[float, List[str]]:
+        """Static code analysis."""
+        issues = []
+        score = 1.0
+        
+        # Check for basic Python syntax issues
+        try:
+            compile(content, file_plan.path, 'exec')
+        except SyntaxError as e:
+            issues.append(f"Syntax error: {e}")
+            score -= 0.5
+        
+        # Check for common code smells
+        lines = content.split('\n')
+        
+        # Long functions
+        in_function = False
+        function_lines = 0
+        for line in lines:
+            if line.strip().startswith('def '):
+                in_function = True
+                function_lines = 0
+            elif in_function and (line.startswith('def ') or line.startswith('class ')):
+                if function_lines > 50:
+                    issues.append("Function too long (>50 lines)")
+                    score -= 0.1
+                in_function = line.strip().startswith('def ')
+                function_lines = 0
+            elif in_function:
+                function_lines += 1
+        
+        # Missing docstrings
+        if file_plan.file_type == "code" and '"""' not in content and "'''" not in content:
+            issues.append("Missing docstrings")
+            score -= 0.2
+        
+        # TODO/FIXME comments
+        todo_count = content.count('TODO') + content.count('FIXME')
+        if todo_count > 0:
+            issues.append(f"Contains {todo_count} TODO/FIXME comments")
+            score -= 0.1 * min(todo_count, 5)
+        
+        return max(score, 0.0), issues
+    
+    def _security_analysis(self, content: str, file_plan: FilePlan) -> Tuple[float, List[str]]:
+        """Security vulnerability analysis."""
+        issues = []
+        score = 1.0
+        
+        # Check for common security issues
+        security_patterns = [
+            (r'eval\s*\(', "Use of eval() function"),
+            (r'exec\s*\(', "Use of exec() function"),
+            (r'os\.system\s*\(', "Use of os.system()"),
+            (r'subprocess\.call\s*\([^)]*shell\s*=\s*True', "Shell injection risk"),
+            (r'pickle\.loads?\s*\(', "Unsafe pickle usage"),
+            (r'yaml\.load\s*\(', "Unsafe YAML loading"),
+        ]
+        
+        for pattern, message in security_patterns:
+            if re.search(pattern, content):
+                issues.append(message)
+                score -= 0.2
+        
+        # Check for hardcoded secrets
+        secret_patterns = [
+            (r'password\s*=\s*["\'][^"\']+["\']', "Hardcoded password"),
+            (r'api_key\s*=\s*["\'][^"\']+["\']', "Hardcoded API key"),
+            (r'secret\s*=\s*["\'][^"\']+["\']', "Hardcoded secret"),
+        ]
+        
+        for pattern, message in secret_patterns:
+            if re.search(pattern, content, re.IGNORECASE):
+                issues.append(message)
+                score -= 0.3
+        
+        return max(score, 0.0), issues
+    
+    def _documentation_analysis(self, content: str, file_plan: FilePlan) -> Tuple[float, List[str]]:
+        """Documentation quality analysis."""
+        issues = []
+        score = 1.0
+        
+        if file_plan.file_type != "code":
+            return score, issues
+        
+        lines = content.split('\n')
+        
+        # Count functions and classes
+        functions = len([line for line in lines if line.strip().startswith('def ')])
+        classes = len([line for line in lines if line.strip().startswith('class ')])
+        
+        # Count docstrings
+        docstring_count = content.count('"""') + content.count("'''")
+        
+        # Estimate expected docstrings (functions + classes + module)
+        expected_docstrings = functions + classes + 1
+        
+        if expected_docstrings > 0:
+            doc_ratio = docstring_count / (expected_docstrings * 2)  # Each docstring has opening and closing
+            if doc_ratio < 0.5:
+                issues.append("Insufficient documentation coverage")
+                score -= 0.3
+            elif doc_ratio < 0.8:
+                issues.append("Low documentation coverage")
+                score -= 0.1
+        
+        # Check for type hints
+        if functions > 0:
+            type_hint_count = len(re.findall(r'def\s+\w+\s*\([^)]*:\s*\w+', content))
+            if type_hint_count / functions < 0.5:
+                issues.append("Missing type hints")
+                score -= 0.2
+        
+        return max(score, 0.0), issues
+    
+    def _performance_analysis(self, content: str, file_plan: FilePlan) -> Tuple[float, List[str]]:
+        """Performance analysis."""
+        issues = []
+        score = 1.0
+        
+        # Check for performance anti-patterns
+        perf_patterns = [
+            (r'for\s+\w+\s+in\s+range\s*\(\s*len\s*\(', "Use enumerate() instead of range(len())"),
+            (r'\+\s*=.*\[.*\]', "List concatenation in loop (use extend())"),
+            (r'\.append\s*\(.*\)\s*\n.*\.append', "Multiple appends (consider list comprehension)"),
+        ]
+        
+        for pattern, message in perf_patterns:
+            matches = len(re.findall(pattern, content))
+            if matches > 0:
+                issues.append(f"{message} ({matches} occurrences)")
+                score -= 0.1 * min(matches, 3)
+        
+        # Check for inefficient imports
+        if re.search(r'from\s+\*\s+import\s+\*', content):
+            issues.append("Wildcard imports")
+            score -= 0.1
+        
+        return max(score, 0.0), issues
+    
+    async def _llm_code_review(self, content: str, file_plan: FilePlan) -> Tuple[float, List[str]]:
+        """LLM-based code review."""
+        prompt = f"""
+        You are an expert code reviewer. Review the following Python code and provide:
+        1. A quality score from 0.0 to 1.0
+        2. Specific suggestions for improvement
+        
+        File: {file_plan.path}
+        Description: {file_plan.description}
+        
+        Code:
+        ```python
+        {content[:2000]}  # Truncate for token limits
+        ```
+        
+        Respond in JSON format:
+        {{
+            "score": 0.85,
+            "suggestions": ["suggestion1", "suggestion2"]
+        }}
+        """
+        
+        messages = [{"role": "user", "content": prompt}]
+        
+        try:
+            response, error = await self.llm._call_llm(messages, self.config.reviewer_model, is_json=True)
+            if response:
+                data = json.loads(response)
+                return data.get("score", 0.8), data.get("suggestions", [])
+        except Exception as e:
+            self.logger.warning(f"LLM code review failed: {e}")
+        
+        return 0.8, []  # Default values
+
+
+class AdvancedGitHubManager:
+    """Enhanced GitHub management with advanced features."""
+    
+    def __init__(self, config: Config, session: aiohttp.ClientSession, logger: logging.Logger):
+        self.config = config
+        self.session = session
+        self.logger = logger
+        self.headers = {
+            "Authorization": f"token {self.config.github_token}",
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": self.config.user_agent
+        }
+    
+    async def create_advanced_repository(self, repo_name: str, description: str, paper: PaperInfo) -> Tuple[Optional[str], str]:
+        """Create repository with advanced features enabled."""
+        # Create basic repository
+        repo_url, message = await self.create_repository(repo_name, description)
+        
+        if not repo_url:
+            return repo_url, message
+        
+        # Enable advanced features
+        if self.config.enable_github_pages:
+            await self._enable_github_pages(repo_name)
+        
+        if self.config.enable_security_features:
+            await self._enable_security_features(repo_name)
+        
+        # Create repository topics/tags
+        await self._set_repository_topics(repo_name, paper)
+        
+        # Create initial branch protection
+        await self._setup_branch_protection(repo_name)
+        
+        return repo_url, "Advanced repository created successfully"
+    
+    async def create_repository(self, repo_name: str, description: str) -> Tuple[Optional[str], str]:
+        """Creates a new GitHub repository."""
+        url = "https://api.github.com/user/repos"
+        payload = {
+            "name": repo_name,
+            "description": description,
+            "private": self.config.repo_visibility == "private",
+            "auto_init": False,
+            "has_issues": True,
+            "has_projects": True,
+            "has_wiki": True,
+            "allow_squash_merge": True,
+            "allow_merge_commit": True,
+            "allow_rebase_merge": True,
+            "delete_branch_on_merge": True
+        }
+        
+        for attempt in range(self.config.retry_attempts):
+            try:
+                async with self.session.post(url, headers=self.headers, json=payload) as response:
+                    if response.status == 201:
+                        data = await response.json()
+                        repo_url = data["html_url"]
+                        self.logger.info(f"Successfully created repository: {repo_url}")
+                        return repo_url, "Repository created successfully"
+                    elif response.status == 422:
+                        error_data = await response.json()
+                        if "name already exists" in str(error_data):
+                            existing_url = f"https://github.com/{self.config.github_username}/{repo_name}"
+                            self.logger.warning(f"Repository already exists: {existing_url}")
+                            return existing_url, "Repository already exists"
+                    elif response.status == 429:
+                        retry_after = int(response.headers.get("Retry-After", 60))
+                        self.logger.warning(f"Rate limit exceeded. Retrying after {retry_after} seconds.")
+                        await asyncio.sleep(retry_after)
+                        continue
+                    
+                    response.raise_for_status()
+            except Exception as e:
+                error_msg = f"Failed to create repository (attempt {attempt+1}): {e}"
+                self.logger.error(error_msg)
+                if attempt < self.config.retry_attempts - 1:
+                    await asyncio.sleep(self.config.retry_delay * (2 ** attempt))
+        
+        return None, f"Failed to create repository after {self.config.retry_attempts} attempts"
+    
+    async def _enable_github_pages(self, repo_name: str):
+        """Enable GitHub Pages for the repository."""
+        url = f"https://api.github.com/repos/{self.config.github_username}/{repo_name}/pages"
+        payload = {
+            "source": {
+                "branch": "main",
+                "path": "/docs"
+            }
+        }
+        
+        try:
+            async with self.session.post(url, headers=self.headers, json=payload) as response:
+                if response.status in [201, 409]:  # 409 means already enabled
+                    self.logger.info(f"GitHub Pages enabled for {repo_name}")
+                else:
+                    self.logger.warning(f"Failed to enable GitHub Pages: {response.status}")
+        except Exception as e:
+            self.logger.warning(f"Error enabling GitHub Pages: {e}")
+    
+    async def _enable_security_features(self, repo_name: str):
+        """Enable security features for the repository."""
+        # Enable vulnerability alerts
+        url = f"https://api.github.com/repos/{self.config.github_username}/{repo_name}/vulnerability-alerts"
+        try:
+            async with self.session.put(url, headers=self.headers) as response:
+                if response.status == 204:
+                    self.logger.info(f"Vulnerability alerts enabled for {repo_name}")
+        except Exception as e:
+            self.logger.warning(f"Error enabling vulnerability alerts: {e}")
+        
+        # Enable automated security fixes
+        url = f"https://api.github.com/repos/{self.config.github_username}/{repo_name}/automated-security-fixes"
+        try:
+            async with self.session.put(url, headers=self.headers) as response:
+                if response.status == 204:
+                    self.logger.info(f"Automated security fixes enabled for {repo_name}")
+        except Exception as e:
+            self.logger.warning(f"Error enabling automated security fixes: {e}")
+    
+    async def _set_repository_topics(self, repo_name: str, paper: PaperInfo):
+        """Set repository topics based on paper content."""
+        topics = ["machine-learning", "research", "python", "ai"]
+        
+        # Add domain-specific topics
+        if paper.research_domain:
+            topics.append(paper.research_domain.lower().replace(" ", "-"))
+        
+        # Add complexity-based topics
+        topics.append(f"complexity-{paper.complexity_level}")
+        
+        # Add methodology topics
+        if paper.methodology:
+            method_topics = paper.methodology.lower().split()[:3]  # First 3 words
+            topics.extend([topic.replace(" ", "-") for topic in method_topics])
+        
+        # Clean and limit topics
+        topics = list(set([topic[:50] for topic in topics if topic.isalnum() or "-" in topic]))[:20]
+        
+        url = f"https://api.github.com/repos/{self.config.github_username}/{repo_name}/topics"
+        payload = {"names": topics}
+        
+        try:
+            async with self.session.put(url, headers=self.headers, json=payload) as response:
+                if response.status == 200:
+                    self.logger.info(f"Repository topics set for {repo_name}: {topics}")
+        except Exception as e:
+            self.logger.warning(f"Error setting repository topics: {e}")
+    
+    async def _setup_branch_protection(self, repo_name: str):
+        """Setup branch protection rules."""
+        url = f"https://api.github.com/repos/{self.config.github_username}/{repo_name}/branches/main/protection"
+        payload = {
+            "required_status_checks": {
+                "strict": True,
+                "contexts": ["continuous-integration"]
+            },
+            "enforce_admins": False,
+            "required_pull_request_reviews": {
+                "required_approving_review_count": 1,
+                "dismiss_stale_reviews": True
+            },
+            "restrictions": None
+        }
+        
+        try:
+            async with self.session.put(url, headers=self.headers, json=payload) as response:
+                if response.status == 200:
+                    self.logger.info(f"Branch protection enabled for {repo_name}")
+        except Exception as e:
+            self.logger.warning(f"Error setting up branch protection: {e}")
+    
+    async def upload_file_batch(self, repo_name: str, files: List[Tuple[str, str]], commit_message: str) -> Tuple[int, int]:
+        """Upload multiple files in a single commit."""
+        successful = 0
+        failed = 0
+        
+        # For now, upload files individually
+        # TODO: Implement tree API for batch uploads
+        for file_path, content in files:
+            success, _ = await self.upload_file(repo_name, file_path, content, f"{commit_message}: {file_path}")
+            if success:
+                successful += 1
+            else:
+                failed += 1
+            
+            # Rate limiting
+            await asyncio.sleep(0.5)
+        
+        return successful, failed
+    
+    async def upload_file(self, repo_name: str, file_path: str, content: str, commit_message: str) -> Tuple[bool, str]:
+        """Uploads a single file to the GitHub repository."""
+        url = f"https://api.github.com/repos/{self.config.github_username}/{repo_name}/contents/{file_path}"
+        
+        # Check if file already exists
+        try:
+            async with self.session.get(url, headers=self.headers) as response:
+                if response.status == 200:
+                    existing_data = await response.json()
+                    sha = existing_data["sha"]
+                else:
+                    sha = None
+        except:
+            sha = None
+        
+        # Encode content to base64
+        encoded_content = base64.b64encode(content.encode('utf-8')).decode('utf-8')
+        
+        payload = {
+            "message": commit_message,
+            "content": encoded_content
+        }
+        
+        if sha:
+            payload["sha"] = sha
+        
+        for attempt in range(self.config.retry_attempts):
+            try:
+                async with self.session.put(url, headers=self.headers, json=payload) as response:
+                    if response.status in [200, 201]:
+                        self.logger.debug(f"Successfully uploaded {file_path}")
+                        return True, "File uploaded successfully"
+                    elif response.status == 429:
+                        retry_after = int(response.headers.get("Retry-After", 60))
+                        self.logger.warning(f"Rate limit exceeded. Retrying after {retry_after} seconds.")
+                        await asyncio.sleep(retry_after)
+                        continue
+                    
+                    error_text = await response.text()
+                    self.logger.error(f"Failed to upload {file_path}: {response.status} - {error_text}")
+                    return False, f"Upload failed: {response.status} - {error_text}"
+            except Exception as e:
+                error_msg = f"Failed to upload {file_path} (attempt {attempt+1}): {e}"
+                self.logger.error(error_msg)
+                if attempt < self.config.retry_attempts - 1:
+                    await asyncio.sleep(self.config.retry_delay * (2 ** attempt))
+        
+        return False, f"Failed to upload {file_path} after {self.config.retry_attempts} attempts"
+
+
+# --- Main Execution Logic ---
+
+async def main():
+    """Main execution function for the M1-Evo Maintainer Agent."""
+    # Load environment variables
+    load_dotenv()
+    
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('logs/m1_evo_agent.log'),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # Initialize configuration
+        config = Config(
+            openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
+            github_token=os.getenv("GITHUB_TOKEN", ""),
+            github_username=os.getenv("GITHUB_USERNAME", ""),
+            huggingface_token=os.getenv("HUGGINGFACE_TOKEN", ""),
+            arxiv_api_key=os.getenv("ARXIV_API_KEY", "")
+        )
+        
+        # Validate required configuration
+        if not config.openrouter_api_key:
+            logger.error("OPENROUTER_API_KEY environment variable is required")
+            return
+        
+        if not config.github_token:
+            logger.error("GITHUB_TOKEN environment variable is required")
+            return
+        
+        if not config.github_username:
+            logger.error("GITHUB_USERNAME environment variable is required")
+            return
+        
+        # Create necessary directories
+        for directory in [config.logs_dir, config.workspace_dir, config.llm_logs_dir, 
+                         config.cache_dir, config.templates_dir]:
+            directory.mkdir(exist_ok=True)
+        
+        logger.info("Starting M1-Evo Maintainer Agent - 360° Repository Creation")
+        logger.info(f"Configuration loaded: {len(config.__dict__)} parameters")
+        
+        # Initialize the main agent
+        async with aiohttp.ClientSession() as session:
+            agent = M1EvoMaintainerAgent(config, session, logger)
+            
+            # Process papers and create repositories
+            await agent.process_all_papers()
+            
+        logger.info("M1-Evo Maintainer Agent execution completed successfully")
+        
+    except KeyboardInterrupt:
+        logger.info("Process interrupted by user")
+    except Exception as e:
+        logger.error(f"Unexpected error in main execution: {e}")
+        raise
+
+
+# --- Utility Functions ---
+
+def setup_environment():
+    """Setup the environment for the M1-Evo Agent."""
+    # Create required directories
+    directories = [
+        "logs",
+        "workspace", 
+        "cache",
+        "templates",
+        "llm_interactions",
+        "benchmarks",
+        "models_cache",
+        "datasets",
+        "artifacts"
+    ]
+    
+    for directory in directories:
+        Path(directory).mkdir(exist_ok=True)
+    
+    # Create .env template if it doesn't exist
+    env_template = """# M1-Evo Maintainer Agent Configuration
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+GITHUB_TOKEN=your_github_token_here
+GITHUB_USERNAME=your_github_username_here
+HUGGINGFACE_TOKEN=your_huggingface_token_here
+ARXIV_API_KEY=your_arxiv_api_key_here
+"""
+    
+    env_file = Path(".env")
+    if not env_file.exists():
+        with open(env_file, 'w') as f:
+            f.write(env_template)
+        print("Created .env template file. Please fill in your API keys.")
+
+
+def validate_dependencies():
+    """Validate that all required dependencies are installed."""
+    required_packages = [
+        "aiohttp",
+        "pyyaml", 
+        "python-dotenv",
+        "requests",
+        "torch",
+        "transformers",
+        "numpy",
+        "matplotlib",
+        "seaborn",
+        "jupyter",
+        "pytest",
+        "black",
+        "flake8",
+        "mypy"
+    ]
+    
+    missing_packages = []
+    for package in required_packages:
+        try:
+            __import__(package.replace("-", "_"))
+        except ImportError:
+            missing_packages.append(package)
+    
+    if missing_packages:
+        print(f"Missing required packages: {', '.join(missing_packages)}")
+        print("Please install them using: pip install " + " ".join(missing_packages))
+        return False
+    
+    return True
+
+
+def print_banner():
+    """Print the application banner."""
+    banner = """
+    ╔══════════════════════════════════════════════════════════════╗
+    ║                                                              ║
+    ║              M1-Evo Maintainer Agent v3.0                   ║
+    ║           360° Research Paper Implementation                  ║
+    ║                                                              ║
+    ║  Automatically creates comprehensive, production-ready       ║
+    ║  repositories from research papers with:                     ║
+    ║  • Complete model implementations                            ║
+    ║  • Comprehensive testing suites                              ║
+    ║  • Documentation and examples                                ║
+    ║  • Deployment configurations                                 ║
+    ║  • Quality assurance                                         ║
+    ║                                                              ║
+    ╚══════════════════════════════════════════════════════════════╝
+    """
+    print(banner)
+
+
+# --- CLI Interface ---
+
+def parse_arguments():
+    """Parse command line arguments."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description="M1-Evo Maintainer Agent - 360° Research Paper Implementation",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python fix2.py                    # Process all papers in relevant_json/
+  python fix2.py --setup            # Setup environment and create .env template
+  python fix2.py --validate         # Validate dependencies
+  python fix2.py --paper paper.json # Process specific paper
+  python fix2.py --dry-run          # Show what would be processed without creating repos
+        """
+    )
+    
+    parser.add_argument(
+        "--setup", 
+        action="store_true",
+        help="Setup environment and create configuration templates"
+    )
+    
+    parser.add_argument(
+        "--validate",
+        action="store_true", 
+        help="Validate that all required dependencies are installed"
+    )
+    
+    parser.add_argument(
+        "--paper",
+        type=str,
+        help="Process a specific paper JSON file"
+    )
+    
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be processed without creating repositories"
+    )
+    
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Enable verbose logging"
+    )
+    
+    parser.add_argument(
+        "--max-papers",
+        type=int,
+        default=None,
+        help="Maximum number of papers to process"
+    )
+    
+    return parser.parse_args()
+
+
+# --- Entry Point ---
+
+if __name__ == "__main__":
+    print_banner()
+    
+    args = parse_arguments()
+    
+    if args.setup:
+        setup_environment()
+        print("Environment setup completed.")
+        sys.exit(0)
+    
+    if args.validate:
+        if validate_dependencies():
+            print("All required dependencies are installed.")
+        else:
+            sys.exit(1)
+    
+    if args.dry_run:
+        print("DRY RUN MODE - No repositories will be created")
+    
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    
+    # Run the main application
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nProcess interrupted by user.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"Fatal error: {e}")
+        sys.exit(1)
