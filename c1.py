@@ -103,15 +103,23 @@ class LLMInterface:
     async def _call_llm(self, messages: List[Dict[str, str]], model: str, is_json: bool = False) -> Tuple[Optional[str], Optional[str]]:
         """Calls the LLM API with retry logic and rate-limiting handling."""
         url = "https://openrouter.ai/api/v1/chat/completions"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": self.config.temperature,
-            "max_tokens": self.config.max_llm_tokens,
-        }
+        # Use minimal payload for coder model (is_json=False)
         if is_json:
-            payload["response_format"] = {"type": "json_object"}
-
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": self.config.temperature,
+                "max_tokens": self.config.max_llm_tokens,
+                "response_format": {"type": "json_object"}
+            }
+        else:
+            payload = {
+                "model": model,
+                "messages": messages,
+                # Remove temperature and max_tokens for coder model to test
+                # "temperature": self.config.temperature,
+                # "max_tokens": self.config.max_llm_tokens,
+            }
         error_message = None
         for attempt in range(self.config.retry_attempts):
             try:
@@ -121,6 +129,12 @@ class LLMInterface:
                         self.logger.warning(f"Rate limit exceeded for LLM API. Retrying after {retry_after} seconds.")
                         await asyncio.sleep(retry_after)
                         continue
+                    if response.status == 400:
+                        # Log the payload and response for debugging
+                        error_text = await response.text()
+                        self.logger.error(f"400 Bad Request for model {model}. Payload: {json.dumps(payload)}. Response: {error_text}")
+                        error_message = f"LLM API call failed (Attempt {attempt+1}/{self.config.retry_attempts}) for model {model}: 400 Bad Request. Response: {error_text}"
+                        break
                     response.raise_for_status()
                     data = await response.json()
                     response_content = data['choices'][0]['message']['content']
