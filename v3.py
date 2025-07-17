@@ -37,7 +37,7 @@ import random
 
 @dataclass
 class ExtractionConfig:
-    """Configuration for paper extraction process."""
+    """Configuration for complete paper extraction and filtering process."""
     # OpenRouter API settings
     openrouter_api_key: str
     model: str = "anthropic/claude-3-haiku"  # Cheaper model for free tier
@@ -45,10 +45,25 @@ class ExtractionConfig:
     max_tokens: int = 4000
     
     # Rate limiting for free tier
-    requests_per_minute: int = 10  # Conservative for free tier
-    delay_between_requests: float = 6.0  # 6 seconds between requests
+    requests_per_minute: int = 8  # Conservative for free tier
+    delay_between_requests: float = 8.0  # 8 seconds between requests
     max_retries: int = 3
     backoff_factor: float = 2.0
+    
+    # ArXiv API settings
+    arxiv_base_url: str = "http://export.arxiv.org/api/query"
+    max_papers_per_query: int = 50
+    days_back: int = 7  # Look back 7 days for new papers
+    
+    # Research domains and keywords
+    target_domains: List[str] = field(default_factory=lambda: [
+        "cs.AI", "cs.LG", "cs.CV", "cs.CL", "cs.NE", "stat.ML"
+    ])
+    relevance_keywords: List[str] = field(default_factory=lambda: [
+        "machine learning", "deep learning", "neural network", "transformer",
+        "attention", "computer vision", "natural language processing",
+        "reinforcement learning", "generative", "diffusion", "LLM"
+    ])
     
     # Chunking settings
     max_chunk_size: int = 3000  # Tokens per chunk
@@ -62,6 +77,14 @@ class ExtractionConfig:
     # Output settings
     save_intermediate: bool = True
     verbose: bool = True
+    
+    # Directories
+    pdf_output_dir: Path = Path("relevant_pdfs")
+    json_output_dir: Path = Path("relevant_json")
+    
+    # Relevance filtering
+    relevance_threshold: float = 0.7  # Minimum relevance score (0-1)
+    enable_relevance_filtering: bool = True
 
 
 @dataclass
@@ -645,6 +668,291 @@ Only include information that is explicitly mentioned in the text."""
         
         return consolidated
     
+    async def fetch_papers_from_arxiv(self, domains: List[str] = None, max_papers: int = None) -> List[Dict[str, Any]]:
+        """Fetch recent papers from ArXiv API for specified domains."""
+        if domains is None:
+            domains = self.config.target_domains
+        if max_papers is None:
+            max_papers = self.config.max_papers_per_query
+        
+        self.logger.info(f"Fetching papers from ArXiv for domains: {domains}")
+        
+        # Calculate date range
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=self.config.days_back)
+        
+        papers = []
+        
+        for domain in domains:
+            try:
+                # Create ArXiv search query
+                search = arxiv.Search(
+                    query=f"cat:{domain}",
+                    max_results=max_papers // len(domains),
+                    sort_by=arxiv.SortCriterion.SubmittedDate,
+                    sort_order=arxiv.SortOrder.Descending
+                )
+                
+                self.logger.info(f"Searching ArXiv for domain: {domain}")
+                
+                for paper in search.results():
+                    # Filter by date
+                    if paper.published.replace(tzinfo=None) < start_date:
+                        continue
+                    
+                    paper_info = {
+                        "id": paper.entry_id.split('/')[-1],
+                        "title": paper.title,
+                        "abstract": paper.summary,
+                        "authors": [str(author) for author in paper.authors],
+                        "published": paper.published.isoformat(),
+                        "pdf_url": paper.pdf_url,
+                        "domain": domain,
+                        "categories": paper.categories
+                    }
+                    papers.append(paper_info)
+                    
+                    if len(papers) >= max_papers:
+                        break
+                
+                # Rate limiting for ArXiv API
+                await asyncio.sleep(3)  # ArXiv recommends 3 second delays
+                
+            except Exception as e:
+                self.logger.error(f"Failed to fetch papers for domain {domain}: {e}")
+                continue
+        
+        self.logger.info(f"Fetched {len(papers)} papers from ArXiv")
+        return papers
+    
+    async def download_pdf(self, paper_info: Dict[str, Any]) -> Optional[Path]:
+        """Download PDF from ArXiv."""
+        pdf_url = paper_info["pdf_url"]
+        paper_id = paper_info["id"]
+        
+        # Create safe filename
+        safe_title = re.sub(r'[^\w\s-]', '', paper_info["title"])
+        safe_title = re.sub(r'[-\s]+', '_', safe_title)[:100]  # Limit length
+        filename = f"{paper_id}_{safe_title}.pdf"
+        
+        pdf_path = self.config.pdf_output_dir / filename
+        
+        # Skip if already exists
+        if pdf_path.exists():
+            self.logger.info(f"PDF already exists: {filename}")
+            return pdf_path
+        
+        try:
+            self.logger.info(f"Downloading PDF: {filename}")
+            
+            # Create output directory
+            self.config.pdf_output_dir.mkdir(exist_ok=True)
+            
+            # Download with requests (simpler than aiohttp for file downloads)
+            import requests
+            response = requests.get(pdf_url, timeout=60)
+            response.raise_for_status()
+            
+            # Save PDF
+            with open(pdf_path, 'wb') as f:
+                f.write(response.content)
+            
+            self.logger.info(f"Successfully downloaded: {filename}")
+            return pdf_path
+            
+        except Exception as e:
+            self.logger.error(f"Failed to download PDF {filename}: {e}")
+            return None
+    
+    async def check_paper_relevance(self, paper_info: Dict[str, Any], full_text: str = None) -> Tuple[bool, float, str]:
+        """Check if paper is relevant using LLM analysis."""
+        if not self.config.enable_relevance_filtering:
+            return True, 1.0, "Relevance filtering disabled"
+        
+        # Use abstract if full text not available
+        content_to_analyze = full_text if full_text else paper_info["abstract"]
+        
+        system_prompt = f"""You are an expert AI researcher. Analyze the given research paper content and determine if it's relevant for implementation.
+
+Target domains: {', '.join(self.config.target_domains)}
+Target keywords: {', '.join(self.config.relevance_keywords)}
+
+A paper is relevant if it:
+1. Presents novel algorithms, models, or techniques
+2. Has clear implementation potential
+3. Includes technical details and methodologies
+4. Is related to machine learning, AI, or computer science
+5. Has practical applications
+
+Rate relevance from 0.0 (not relevant) to 1.0 (highly relevant)."""
+
+        user_prompt = f"""Analyze this research paper for implementation relevance:
+
+Title: {paper_info['title']}
+Abstract: {paper_info['abstract']}
+Categories: {', '.join(paper_info.get('categories', []))}
+
+{f"Full content preview: {content_to_analyze[:2000]}..." if full_text else ""}
+
+Respond with JSON:
+{{
+  "relevant": true/false,
+  "relevance_score": 0.0-1.0,
+  "reasoning": "explanation of why relevant or not",
+  "key_contributions": ["list of main contributions"],
+  "implementation_complexity": "low/medium/high",
+  "recommended_for_implementation": true/false
+}}"""
+
+        content, error = await self._call_llm(user_prompt, system_prompt)
+        
+        if error:
+            self.logger.warning(f"Relevance check failed: {error}")
+            return True, 0.5, "Failed to check relevance, assuming relevant"
+        
+        try:
+            analysis = json.loads(content)
+            is_relevant = analysis.get("relevant", False)
+            score = analysis.get("relevance_score", 0.0)
+            reasoning = analysis.get("reasoning", "No reasoning provided")
+            
+            # Apply threshold
+            is_relevant = is_relevant and score >= self.config.relevance_threshold
+            
+            return is_relevant, score, reasoning
+            
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse relevance analysis: {e}")
+            return True, 0.5, "Failed to parse relevance analysis"
+    
+    async def process_arxiv_papers(self, domains: List[str] = None, max_papers: int = None) -> Dict[str, Any]:
+        """Complete pipeline: fetch, download, extract, and filter papers from ArXiv."""
+        self.logger.info("Starting complete ArXiv paper processing pipeline")
+        
+        # Create output directories
+        self.config.pdf_output_dir.mkdir(exist_ok=True)
+        self.config.json_output_dir.mkdir(exist_ok=True)
+        
+        # Step 1: Fetch papers from ArXiv
+        papers = await self.fetch_papers_from_arxiv(domains, max_papers)
+        
+        if not papers:
+            self.logger.warning("No papers fetched from ArXiv")
+            return {"processed": 0, "relevant": 0, "downloaded": 0}
+        
+        # Processing stats
+        stats = {
+            "total_fetched": len(papers),
+            "downloaded": 0,
+            "processed": 0,
+            "relevant": 0,
+            "failed": 0,
+            "relevant_papers": []
+        }
+        
+        # Step 2: Process each paper
+        with tqdm(total=len(papers), desc="Processing papers") as pbar:
+            for paper_info in papers:
+                try:
+                    pbar.set_description(f"Processing: {paper_info['title'][:50]}...")
+                    
+                    # Step 2a: Download PDF
+                    pdf_path = await self.download_pdf(paper_info)
+                    if not pdf_path:
+                        stats["failed"] += 1
+                        pbar.update(1)
+                        continue
+                    
+                    stats["downloaded"] += 1
+                    
+                    # Step 2b: Extract text from PDF
+                    try:
+                        full_text, extraction_stats = self.extract_text_from_pdf(pdf_path)
+                    except Exception as e:
+                        self.logger.error(f"Failed to extract text from {pdf_path}: {e}")
+                        stats["failed"] += 1
+                        pbar.update(1)
+                        continue
+                    
+                    # Step 2c: Check relevance
+                    is_relevant, relevance_score, reasoning = await self.check_paper_relevance(
+                        paper_info, full_text
+                    )
+                    
+                    self.logger.info(f"Paper '{paper_info['title'][:50]}...' - Relevant: {is_relevant} (Score: {relevance_score:.2f})")
+                    
+                    if is_relevant:
+                        # Step 2d: Full content extraction and analysis
+                        chunks = self.create_text_chunks(full_text)
+                        chunk_analyses = []
+                        
+                        for chunk in chunks:
+                            analysis = await self.analyze_chunk(chunk)
+                            chunk_analyses.append(analysis)
+                        
+                        # Consolidate results
+                        extracted_content = self.consolidate_analyses(chunk_analyses)
+                        
+                        # Add paper metadata
+                        extracted_content.title = paper_info["title"]
+                        extracted_content.abstract = paper_info["abstract"]
+                        extracted_content.authors = paper_info["authors"]
+                        extracted_content.publication_info = {
+                            "arxiv_id": paper_info["id"],
+                            "published": paper_info["published"],
+                            "categories": paper_info.get("categories", []),
+                            "pdf_url": paper_info["pdf_url"]
+                        }
+                        extracted_content.full_text = full_text
+                        extracted_content.processing_stats.update(extraction_stats)
+                        extracted_content.processing_stats["relevance_score"] = relevance_score
+                        extracted_content.processing_stats["relevance_reasoning"] = reasoning
+                        
+                        # Save to JSON
+                        json_filename = f"{paper_info['id']}_{re.sub(r'[^\w\s-]', '', paper_info['title'])[:50]}.json"
+                        json_filename = re.sub(r'[-\s]+', '_', json_filename)
+                        json_path = self.config.json_output_dir / json_filename
+                        
+                        with open(json_path, 'w', encoding='utf-8') as f:
+                            json.dump(asdict(extracted_content), f, indent=2, ensure_ascii=False, default=str)
+                        
+                        stats["relevant"] += 1
+                        stats["relevant_papers"].append({
+                            "title": paper_info["title"],
+                            "arxiv_id": paper_info["id"],
+                            "relevance_score": relevance_score,
+                            "json_file": str(json_path),
+                            "pdf_file": str(pdf_path)
+                        })
+                        
+                        self.logger.info(f"✅ Saved relevant paper: {json_filename}")
+                    else:
+                        self.logger.info(f"⏭️  Skipped irrelevant paper: {paper_info['title'][:50]}...")
+                        # Optionally remove downloaded PDF if not relevant
+                        if pdf_path and pdf_path.exists():
+                            pdf_path.unlink()
+                    
+                    stats["processed"] += 1
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to process paper {paper_info['title']}: {e}")
+                    stats["failed"] += 1
+                
+                pbar.update(1)
+                
+                # Rate limiting between papers
+                await asyncio.sleep(2)
+        
+        # Save processing report
+        report_path = Path(f"arxiv_processing_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+        with open(report_path, 'w') as f:
+            json.dump(stats, f, indent=2, default=str)
+        
+        self.logger.info(f"📊 Processing complete! Report saved to: {report_path}")
+        self.logger.info(f"📈 Stats: {stats['relevant']}/{stats['processed']} relevant papers found")
+        
+        return stats
+
     async def extract_from_pdf(self, pdf_path: Union[str, Path]) -> ExtractedPaperContent:
         """Main method to extract content from PDF."""
         pdf_path = Path(pdf_path)
@@ -710,16 +1018,50 @@ Only include information that is explicitly mentioned in the text."""
 
 
 async def main():
-    """Main function for command-line usage."""
+    """Main function for command-line usage - Complete ArXiv Pipeline."""
     import argparse
     
-    parser = argparse.ArgumentParser(description="Advanced Paper Content Extractor")
-    parser.add_argument("pdf_path", help="Path to PDF file")
+    parser = argparse.ArgumentParser(
+        description="Advanced Paper Content Extractor - Complete ArXiv Pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Complete ArXiv pipeline (fetch + extract + filter)
+  python advanced_paper_extractor.py --arxiv --domains cs.AI cs.LG --max-papers 10
+  
+  # Extract from existing PDF
+  python advanced_paper_extractor.py paper.pdf --output extracted.json
+  
+  # Fetch papers for specific domains
+  python advanced_paper_extractor.py --arxiv --domains cs.CV cs.CL --days-back 3
+  
+  # Free tier friendly settings
+  python advanced_paper_extractor.py --arxiv --model anthropic/claude-3-haiku --delay 10
+        """
+    )
+    
+    # Mode selection
+    parser.add_argument("pdf_path", nargs="?", help="Path to PDF file (for single PDF mode)")
+    parser.add_argument("--arxiv", action="store_true", help="Fetch papers from ArXiv (replaces v3.py)")
+    
+    # ArXiv fetching options
+    parser.add_argument("--domains", nargs="+", default=["cs.AI", "cs.LG", "cs.CV", "cs.CL"], 
+                       help="ArXiv domains to search")
+    parser.add_argument("--max-papers", type=int, default=20, help="Maximum papers to fetch")
+    parser.add_argument("--days-back", type=int, default=7, help="Days to look back for papers")
+    parser.add_argument("--keywords", nargs="+", help="Relevance keywords")
+    
+    # Processing options
     parser.add_argument("--output", "-o", help="Output JSON file", default="extracted_content.json")
-    parser.add_argument("--model", help="OpenRouter model to use", default="anthropic/claude-3-haiku")
+    parser.add_argument("--model", help="OpenRouter model", default="anthropic/claude-3-haiku")
+    parser.add_argument("--delay", type=float, default=8.0, help="Delay between requests (seconds)")
+    parser.add_argument("--threshold", type=float, default=0.7, help="Relevance threshold (0-1)")
+    
+    # Control options
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     parser.add_argument("--no-cache", action="store_true", help="Disable caching")
-    parser.add_argument("--resume", action="store_true", help="Resume from previous run")
+    parser.add_argument("--no-filter", action="store_true", help="Disable relevance filtering")
+    parser.add_argument("--dry-run", action="store_true", help="Show what would be processed")
     
     args = parser.parse_args()
     
@@ -727,43 +1069,121 @@ async def main():
     load_dotenv()
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        print("Error: OPENROUTER_API_KEY environment variable not set")
-        return
+        print("❌ Error: OPENROUTER_API_KEY environment variable not set")
+        print("Please set your OpenRouter API key in .env file:")
+        print("OPENROUTER_API_KEY=your_key_here")
+        return 1
     
     # Create config
     config = ExtractionConfig(
         openrouter_api_key=api_key,
         model=args.model,
+        delay_between_requests=args.delay,
+        relevance_threshold=args.threshold,
         verbose=args.verbose,
         enable_caching=not args.no_cache,
-        resume_on_failure=args.resume
+        enable_relevance_filtering=not args.no_filter,
+        target_domains=args.domains,
+        max_papers_per_query=args.max_papers,
+        days_back=args.days_back
     )
     
-    # Extract content
+    if args.keywords:
+        config.relevance_keywords = args.keywords
+    
+    print("🚀 Advanced Paper Content Extractor")
+    print("=" * 50)
+    
+    if args.dry_run:
+        print("🔍 DRY RUN MODE - No files will be created")
+    
+    print(f"📋 Configuration:")
+    print(f"   Model: {config.model}")
+    print(f"   Rate limit: {config.requests_per_minute} req/min")
+    print(f"   Delay: {config.delay_between_requests}s")
+    print(f"   Relevance threshold: {config.relevance_threshold}")
+    print(f"   Caching: {config.enable_caching}")
+    print(f"   Filtering: {config.enable_relevance_filtering}")
+    
     async with AdvancedPaperExtractor(config) as extractor:
         try:
-            result = await extractor.extract_from_pdf(args.pdf_path)
-            
-            # Save result
-            output_path = Path(args.output)
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(asdict(result), f, indent=2, ensure_ascii=False)
-            
-            print(f"\n✅ Extraction completed successfully!")
-            print(f"📄 Output saved to: {output_path}")
-            print(f"📊 Processing stats:")
-            for key, value in result.processing_stats.items():
-                print(f"   {key}: {value}")
-            
-            print(f"\n🔍 Extracted content summary:")
-            print(f"   Mathematical formulations: {len(result.mathematical_formulations)}")
-            print(f"   Algorithms: {len(result.algorithms)}")
-            print(f"   Hyperparameters: {len(result.hyperparameters)}")
-            print(f"   Datasets: {len(result.datasets_used)}")
-            print(f"   Evaluation metrics: {len(result.evaluation_metrics)}")
-            
+            if args.arxiv:
+                # Complete ArXiv pipeline (replaces v3.py)
+                print(f"\n📚 ArXiv Pipeline Mode")
+                print(f"   Domains: {', '.join(config.target_domains)}")
+                print(f"   Max papers: {config.max_papers_per_query}")
+                print(f"   Days back: {config.days_back}")
+                print(f"   Keywords: {', '.join(config.relevance_keywords[:5])}...")
+                
+                if args.dry_run:
+                    # Just fetch and show what would be processed
+                    papers = await extractor.fetch_papers_from_arxiv()
+                    print(f"\n🔍 Would process {len(papers)} papers:")
+                    for i, paper in enumerate(papers[:10]):
+                        print(f"   {i+1}. {paper['title'][:60]}...")
+                    if len(papers) > 10:
+                        print(f"   ... and {len(papers) - 10} more")
+                    return 0
+                
+                # Run complete pipeline
+                stats = await extractor.process_arxiv_papers()
+                
+                print(f"\n🎉 ArXiv Pipeline Complete!")
+                print(f"📊 Final Statistics:")
+                print(f"   📄 Papers fetched: {stats['total_fetched']}")
+                print(f"   ⬇️  PDFs downloaded: {stats['downloaded']}")
+                print(f"   🔬 Papers processed: {stats['processed']}")
+                print(f"   ✅ Relevant papers: {stats['relevant']}")
+                print(f"   ❌ Failed: {stats['failed']}")
+                
+                if stats['relevant'] > 0:
+                    success_rate = (stats['relevant'] / stats['processed']) * 100
+                    print(f"   📈 Success rate: {success_rate:.1f}%")
+                    
+                    print(f"\n✅ Relevant Papers Saved:")
+                    for paper in stats['relevant_papers']:
+                        print(f"   • {paper['title'][:60]}... (Score: {paper['relevance_score']:.2f})")
+                        print(f"     JSON: {paper['json_file']}")
+                
+            elif args.pdf_path:
+                # Single PDF mode
+                print(f"\n📄 Single PDF Mode")
+                print(f"   Input: {args.pdf_path}")
+                print(f"   Output: {args.output}")
+                
+                if args.dry_run:
+                    print(f"🔍 Would extract content from: {args.pdf_path}")
+                    return 0
+                
+                result = await extractor.extract_from_pdf(args.pdf_path)
+                
+                # Save result
+                output_path = Path(args.output)
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    json.dump(asdict(result), f, indent=2, ensure_ascii=False)
+                
+                print(f"\n✅ Extraction completed!")
+                print(f"📄 Output: {output_path}")
+                print(f"🔍 Content summary:")
+                print(f"   Mathematical formulations: {len(result.mathematical_formulations)}")
+                print(f"   Algorithms: {len(result.algorithms)}")
+                print(f"   Hyperparameters: {len(result.hyperparameters)}")
+                print(f"   Datasets: {len(result.datasets_used)}")
+                print(f"   Evaluation metrics: {len(result.evaluation_metrics)}")
+                
+            else:
+                print("❌ Error: Must specify either --arxiv or provide a PDF path")
+                print("Use --help for usage examples")
+                return 1
+                
+        except KeyboardInterrupt:
+            print("\n⏹️  Process interrupted by user")
+            return 0
         except Exception as e:
-            print(f"❌ Extraction failed: {e}")
+            print(f"\n❌ Process failed: {e}")
+            if args.verbose:
+                import traceback
+                traceback.print_exc()
             return 1
     
     return 0
