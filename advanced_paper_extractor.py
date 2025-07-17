@@ -40,7 +40,7 @@ class ExtractionConfig:
     """Configuration for complete paper extraction and filtering process."""
     # OpenRouter API settings
     openrouter_api_key: str
-    model: str = "anthropic/claude-3-haiku"  # Cheaper model for free tier
+    model: str = "moonshotai/kimi-k2:free"  # Cheaper model for free tier
     temperature: float = 0.1
     max_tokens: int = 1000  # Reduced from 4000 to save credits
     
