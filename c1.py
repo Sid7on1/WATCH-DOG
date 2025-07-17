@@ -169,7 +169,7 @@ class RepoState:
 
 @dataclass
 class PaperInfo:
-    """Enhanced paper information with research context."""
+    """Enhanced paper information with deep research analysis."""
     id: str
     title: str
     summary: str
@@ -192,6 +192,20 @@ class PaperInfo:
     baseline_methods: List[str] = field(default_factory=list)
     evaluation_metrics: List[str] = field(default_factory=list)
     reproducibility_info: Dict[str, Any] = field(default_factory=dict)
+    
+    # NEW: Deep paper analysis fields
+    full_text: Optional[str] = None  # Complete paper content
+    mathematical_formulations: List[str] = field(default_factory=list)  # Extracted equations
+    algorithm_pseudocode: List[str] = field(default_factory=list)  # Algorithm descriptions
+    architecture_diagrams: List[str] = field(default_factory=list)  # Figure descriptions
+    experimental_setup: Optional[str] = None  # Detailed experimental methodology
+    hyperparameters: Dict[str, Any] = field(default_factory=dict)  # Specific hyperparameters
+    model_architecture: Dict[str, Any] = field(default_factory=dict)  # Detailed architecture
+    loss_functions: List[str] = field(default_factory=list)  # Specific loss functions
+    optimization_details: Dict[str, Any] = field(default_factory=dict)  # Optimizer specifics
+    dataset_preprocessing: List[str] = field(default_factory=list)  # Data preprocessing steps
+    evaluation_protocol: Optional[str] = None  # Exact evaluation methodology
+    code_references: List[str] = field(default_factory=list)  # Referenced implementations
 
 @dataclass
 class FilePlan:
@@ -265,8 +279,18 @@ class LLMInterface:
         return data
 
     async def _call_llm(self, messages: List[Dict[str, str]], model: str, is_json: bool = False) -> Tuple[Optional[str], Optional[str]]:
-        """Calls the LLM API with retry logic and rate-limiting handling."""
+        """Calls the LLM API with retry logic and rate-limiting handling optimized for CI/CD."""
         url = "https://openrouter.ai/api/v1/chat/completions"
+        
+        # GitHub Actions environment adjustments
+        is_github_actions = os.getenv("GITHUB_ACTIONS") == "true"
+        if is_github_actions:
+            # Reduce timeout and increase retry delay for CI stability
+            timeout = min(self.config.request_timeout, 300)  # Max 5 minutes in CI
+            base_retry_delay = max(self.config.retry_delay, 30)  # Minimum 30s between retries
+        else:
+            timeout = self.config.request_timeout
+            base_retry_delay = self.config.retry_delay
         
         if is_json:
             payload = {
@@ -287,37 +311,84 @@ class LLMInterface:
         error_message = None
         for attempt in range(self.config.retry_attempts):
             try:
-                async with self.session.post(url, headers=self.headers, json=payload, timeout=self.config.request_timeout) as response:
+                # Add jitter to prevent thundering herd in parallel CI jobs
+                if attempt > 0:
+                    jitter = random.uniform(0.5, 1.5)
+                    delay = base_retry_delay * (2 ** (attempt - 1)) * jitter
+                    self.logger.info(f"Retrying LLM call in {delay:.1f} seconds (attempt {attempt + 1})")
+                    await asyncio.sleep(delay)
+                
+                async with self.session.post(url, headers=self.headers, json=payload, timeout=timeout) as response:
                     if response.status == 429:
                         retry_after = int(response.headers.get("Retry-After", 60))
+                        # In CI, respect rate limits more conservatively
+                        if is_github_actions:
+                            retry_after = max(retry_after, 60)  # Minimum 1 minute wait
+                        
                         self.logger.warning(f"Rate limit exceeded for LLM API. Retrying after {retry_after} seconds.")
+                        if is_github_actions:
+                            print(f"::warning::Rate limited by LLM API, waiting {retry_after}s")
+                        
                         await asyncio.sleep(retry_after)
                         continue
+                        
                     if response.status == 400:
                         error_text = await response.text()
                         self.logger.error(f"400 Bad Request for model {model}. Response: {error_text}")
                         error_message = f"LLM API call failed (Attempt {attempt+1}/{self.config.retry_attempts}) for model {model}: 400 Bad Request. Response: {error_text}"
                         break
+                        
+                    if response.status == 401:
+                        error_text = await response.text()
+                        self.logger.error(f"401 Unauthorized for model {model}. Check API key.")
+                        if is_github_actions:
+                            print("::error::LLM API authentication failed - check OPENROUTER_API_KEY secret")
+                        error_message = f"Authentication failed for LLM API: {error_text}"
+                        break
+                        
+                    if response.status == 403:
+                        error_text = await response.text()
+                        self.logger.error(f"403 Forbidden for model {model}. Model may not be available.")
+                        error_message = f"Access denied for model {model}: {error_text}"
+                        break
+                    
                     response.raise_for_status()
                     data = await response.json()
+                    
+                    if 'choices' not in data or not data['choices']:
+                        error_message = f"Invalid response format from LLM API: {data}"
+                        self.logger.error(error_message)
+                        continue
+                    
                     response_content = data['choices'][0]['message']['content']
                     
-                    # Log interaction with redacted sensitive data
-                    log_file = self.config.llm_logs_dir / f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{model.replace('/', '_')}.json"
-                    with open(log_file, 'w', encoding='utf-8') as f:
-                        json.dump(self.redact_sensitive({"request": payload, "response": data}), f, indent=2)
+                    # Log interaction with redacted sensitive data (less verbose in CI)
+                    if not is_github_actions or self.logger.level <= logging.DEBUG:
+                        log_file = self.config.llm_logs_dir / f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{model.replace('/', '_')}.json"
+                        with open(log_file, 'w', encoding='utf-8') as f:
+                            json.dump(self.redact_sensitive({"request": payload, "response": data}), f, indent=2)
 
                     return response_content, None
+                    
+            except asyncio.TimeoutError:
+                error_message = f"LLM API call timed out (Attempt {attempt+1}/{self.config.retry_attempts}) for model {model}"
+                self.logger.warning(error_message)
+                if is_github_actions:
+                    print(f"::warning::LLM API timeout on attempt {attempt+1}")
+                    
             except aiohttp.ClientResponseError as e:
                 error_message = f"LLM API call failed (Attempt {attempt+1}/{self.config.retry_attempts}) for model {model}: {e}"
                 self.logger.warning(error_message)
-                if attempt < self.config.retry_attempts - 1:
-                    await asyncio.sleep(self.config.retry_delay * (2 ** attempt))
+                
             except Exception as e:
                 error_message = f"Unexpected error in LLM call: {e}"
                 self.logger.error(error_message)
-                if attempt < self.config.retry_attempts - 1:
-                    await asyncio.sleep(self.config.retry_delay * (2 ** attempt))
+                if is_github_actions:
+                    print(f"::error::Unexpected LLM API error: {e}")
+        
+        # Final failure
+        if is_github_actions:
+            print(f"::error::LLM API call failed after {self.config.retry_attempts} attempts for model {model}")
         
         return None, error_message
 
@@ -2234,6 +2305,258 @@ class GitHubManager:
         return False, f"Failed to upload {file_path} after {self.config.retry_attempts} attempts"
 
 
+class PaperContentAnalyzer:
+    """Analyzes actual paper content to extract implementation details."""
+    
+    def __init__(self, config: Config, llm_interface: 'LLMInterface', logger: logging.Logger):
+        self.config = config
+        self.llm = llm_interface
+        self.logger = logger
+    
+    async def analyze_paper_content(self, paper: PaperInfo) -> PaperInfo:
+        """Deep analysis of paper content to extract implementation specifics."""
+        if not paper.full_text:
+            self.logger.warning(f"No full text available for {paper.title}, using metadata only")
+            return paper
+        
+        # Extract mathematical formulations
+        paper.mathematical_formulations = await self._extract_equations(paper.full_text)
+        
+        # Extract algorithm pseudocode
+        paper.algorithm_pseudocode = await self._extract_algorithms(paper.full_text)
+        
+        # Extract model architecture details
+        paper.model_architecture = await self._extract_architecture(paper.full_text)
+        
+        # Extract hyperparameters
+        paper.hyperparameters = await self._extract_hyperparameters(paper.full_text)
+        
+        # Extract experimental setup
+        paper.experimental_setup = await self._extract_experimental_setup(paper.full_text)
+        
+        # Extract loss functions
+        paper.loss_functions = await self._extract_loss_functions(paper.full_text)
+        
+        # Extract evaluation protocol
+        paper.evaluation_protocol = await self._extract_evaluation_protocol(paper.full_text)
+        
+        self.logger.info(f"Deep analysis completed for {paper.title}")
+        return paper
+    
+    async def _extract_equations(self, full_text: str) -> List[str]:
+        """Extract mathematical equations and formulations."""
+        prompt = f"""
+        Extract all mathematical equations, formulas, and mathematical expressions from this research paper.
+        Focus on:
+        1. Loss functions and objective functions
+        2. Model equations and mathematical definitions
+        3. Algorithm formulations
+        4. Optimization objectives
+        5. Statistical measures and metrics
+        
+        Paper content:
+        {full_text[:8000]}  # Limit to avoid token limits
+        
+        Return a JSON list of equations with their context:
+        {{
+          "equations": [
+            {{
+              "equation": "L = -log(p(y|x))",
+              "context": "Cross-entropy loss function",
+              "variables": {{"L": "loss", "p": "probability", "y": "target", "x": "input"}}
+            }}
+          ]
+        }}
+        """
+        
+        content, error = await self.llm._call_llm([{"role": "user", "content": prompt}], 
+                                                 self.config.architect_model, is_json=True)
+        if error:
+            self.logger.warning(f"Failed to extract equations: {error}")
+            return []
+        
+        try:
+            data = json.loads(content)
+            return [eq["equation"] + " # " + eq["context"] for eq in data.get("equations", [])]
+        except:
+            return []
+    
+    async def _extract_algorithms(self, full_text: str) -> List[str]:
+        """Extract algorithm descriptions and pseudocode."""
+        prompt = f"""
+        Extract all algorithms, procedures, and step-by-step processes from this paper.
+        Focus on:
+        1. Training algorithms
+        2. Inference procedures
+        3. Data processing steps
+        4. Optimization algorithms
+        5. Evaluation procedures
+        
+        Paper content:
+        {full_text[:8000]}
+        
+        Return detailed pseudocode for each algorithm found.
+        Format as JSON:
+        {{
+          "algorithms": [
+            {{
+              "name": "Training Algorithm",
+              "pseudocode": "1. Initialize model\\n2. For each batch:\\n3. Forward pass\\n4. Compute loss\\n5. Backward pass",
+              "purpose": "Train the neural network model"
+            }}
+          ]
+        }}
+        """
+        
+        content, error = await self.llm._call_llm([{"role": "user", "content": prompt}], 
+                                                 self.config.architect_model, is_json=True)
+        if error:
+            return []
+        
+        try:
+            data = json.loads(content)
+            return [f"{alg['name']}: {alg['pseudocode']}" for alg in data.get("algorithms", [])]
+        except:
+            return []
+    
+    async def _extract_architecture(self, full_text: str) -> Dict[str, Any]:
+        """Extract detailed model architecture information."""
+        prompt = f"""
+        Extract the complete model architecture details from this paper.
+        Focus on:
+        1. Layer types and configurations
+        2. Network topology
+        3. Input/output dimensions
+        4. Activation functions
+        5. Normalization techniques
+        6. Attention mechanisms
+        7. Skip connections
+        
+        Paper content:
+        {full_text[:8000]}
+        
+        Return detailed architecture specification:
+        {{
+          "architecture": {{
+            "model_type": "transformer",
+            "layers": [
+              {{"type": "embedding", "input_dim": 512, "output_dim": 768}},
+              {{"type": "transformer_block", "num_heads": 12, "hidden_dim": 3072}}
+            ],
+            "activation": "gelu",
+            "normalization": "layer_norm",
+            "dropout": 0.1
+          }}
+        }}
+        """
+        
+        content, error = await self.llm._call_llm([{"role": "user", "content": prompt}], 
+                                                 self.config.architect_model, is_json=True)
+        if error:
+            return {}
+        
+        try:
+            data = json.loads(content)
+            return data.get("architecture", {})
+        except:
+            return {}
+    
+    async def _extract_hyperparameters(self, full_text: str) -> Dict[str, Any]:
+        """Extract specific hyperparameters used in the paper."""
+        prompt = f"""
+        Extract all hyperparameters, training settings, and configuration values from this paper.
+        
+        Paper content:
+        {full_text[:8000]}
+        
+        Return as JSON:
+        {{
+          "hyperparameters": {{
+            "learning_rate": 0.001,
+            "batch_size": 32,
+            "epochs": 100,
+            "optimizer": "adam",
+            "weight_decay": 0.01,
+            "warmup_steps": 1000
+          }}
+        }}
+        """
+        
+        content, error = await self.llm._call_llm([{"role": "user", "content": prompt}], 
+                                                 self.config.architect_model, is_json=True)
+        if error:
+            return {}
+        
+        try:
+            data = json.loads(content)
+            return data.get("hyperparameters", {})
+        except:
+            return {}
+    
+    async def _extract_experimental_setup(self, full_text: str) -> Optional[str]:
+        """Extract experimental methodology and setup."""
+        prompt = f"""
+        Extract the complete experimental setup and methodology from this paper.
+        Include:
+        1. Dataset preparation
+        2. Training procedure
+        3. Evaluation methodology
+        4. Baseline comparisons
+        5. Hardware/software requirements
+        
+        Paper content:
+        {full_text[:8000]}
+        
+        Provide a detailed description of how to reproduce the experiments.
+        """
+        
+        content, error = await self.llm._call_llm([{"role": "user", "content": prompt}], 
+                                                 self.config.documentation_model)
+        return content if not error else None
+    
+    async def _extract_loss_functions(self, full_text: str) -> List[str]:
+        """Extract specific loss functions used."""
+        # Use regex to find common loss function patterns
+        loss_patterns = [
+            r'cross[- ]entropy',
+            r'mean squared error',
+            r'binary cross[- ]entropy',
+            r'focal loss',
+            r'contrastive loss',
+            r'triplet loss',
+            r'adversarial loss',
+            r'reconstruction loss'
+        ]
+        
+        found_losses = []
+        text_lower = full_text.lower()
+        for pattern in loss_patterns:
+            if re.search(pattern, text_lower):
+                found_losses.append(pattern.replace('[- ]', ' '))
+        
+        return found_losses
+    
+    async def _extract_evaluation_protocol(self, full_text: str) -> Optional[str]:
+        """Extract evaluation methodology."""
+        prompt = f"""
+        Extract the evaluation protocol and metrics from this paper.
+        Focus on:
+        1. Evaluation metrics used
+        2. Test datasets
+        3. Evaluation procedure
+        4. Statistical significance tests
+        
+        Paper content:
+        {full_text[:8000]}
+        
+        Provide specific implementation details for evaluation.
+        """
+        
+        content, error = await self.llm._call_llm([{"role": "user", "content": prompt}], 
+                                                 self.config.documentation_model)
+        return content if not error else None
+
+
 class PaperProcessor:
     """Processes research papers and extracts relevant information."""
     
@@ -2402,9 +2725,12 @@ class M1EvoMaintainerAgent:
         self._create_directories()
 
     def _setup_logging(self) -> logging.Logger:
-        """Sets up comprehensive logging."""
+        """Sets up comprehensive logging with GitHub Actions support."""
         logger = logging.getLogger("M1EvoAgent")
         logger.setLevel(logging.INFO)
+        
+        # Detect GitHub Actions environment
+        is_github_actions = os.getenv("GITHUB_ACTIONS") == "true"
         
         # Create logs directory
         self.config.logs_dir.mkdir(exist_ok=True)
@@ -2416,18 +2742,54 @@ class M1EvoMaintainerAgent:
         
         # Console handler
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
+        console_handler.setLevel(logging.INFO if not is_github_actions else logging.DEBUG)
         
-        # Formatter
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        file_handler.setFormatter(formatter)
-        console_handler.setFormatter(formatter)
+        # Formatters
+        if is_github_actions:
+            # GitHub Actions friendly format
+            file_formatter = logging.Formatter(
+                '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+            )
+            console_formatter = logging.Formatter('[%(levelname)s] %(message)s')
+        else:
+            file_formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s'
+            )
+            console_formatter = logging.Formatter('%(levelname)s - %(message)s')
+        
+        file_handler.setFormatter(file_formatter)
+        console_handler.setFormatter(console_formatter)
         
         logger.addHandler(file_handler)
         logger.addHandler(console_handler)
         
+        # GitHub Actions specific logging
+        if is_github_actions:
+            # Add GitHub Actions annotations for errors and warnings
+            class GitHubActionsHandler(logging.Handler):
+                def emit(self, record):
+                    try:
+                        if record.levelno >= logging.ERROR:
+                            print(f"::error::{record.getMessage()}")
+                        elif record.levelno >= logging.WARNING:
+                            print(f"::warning::{record.getMessage()}")
+                        elif record.levelno >= logging.INFO and "SUCCESS" in record.getMessage():
+                            print(f"::notice::{record.getMessage()}")
+                    except Exception:
+                        pass  # Don't let logging errors break the application
+            
+            gh_handler = GitHubActionsHandler()
+            gh_handler.setLevel(logging.WARNING)
+            logger.addHandler(gh_handler)
+            
+            logger.info("GitHub Actions environment detected - enhanced logging enabled")
+        
+        # Suppress noisy third-party loggers
+        logging.getLogger('aiohttp').setLevel(logging.WARNING)
+        logging.getLogger('urllib3').setLevel(logging.WARNING)
+        logging.getLogger('asyncio').setLevel(logging.WARNING)
+        
+        logger.info(f"Logging initialized. Log file: {log_file}")
         return logger
 
     def _create_directories(self):
@@ -2705,44 +3067,7 @@ async def main():
     await agent.run()
 
 
-if __name__ == "__main__":
-    asyncio.run(main())per, no
-t generic code
-        6. For core files, aim for 200-500+ lines of functional code
-        7. Include proper imports and ensure code is executable
-        8. Add comprehensive error handling and validation
-        9. Include example usage in docstrings where appropriate
-        10. Make connections to the paper's specific techniques and innovations
-
-        **Paper-Specific Implementation Notes:**
-        - Implement the exact algorithms, architectures, or methodologies described in the paper
-        - Use the same terminology and variable names as in the paper where possible
-        - Include mathematical formulations in docstrings where relevant
-        - Reference specific sections or equations from the paper in comments
-        - Implement paper-specific hyperparameters and configurations
-
-        Generate ONLY the raw file content. Do not wrap in code blocks or add any markdown formatting.
-        """
-        
-        messages = [{"role": "user", "content": prompt}]
-        self.logger.info(f"Requesting comprehensive content for '{file_plan.path}' from coder model")
-        
-        for attempt in range(self.config.retry_attempts):
-            content, error = await self._call_llm(messages, self.config.coder_model)
-            if content and self._validate_comprehensive_content(content, file_plan):
-                return content, "Comprehensive file content generated successfully."
-            else:
-                self.logger.warning(f"Generated content for {file_plan.path} insufficient, retrying...")
-                if attempt < self.config.retry_attempts - 1:
-                    await asyncio.sleep(self.config.retry_delay)
-        
-        # Generate enhanced fallback content
-        fallback_content = self._generate_enhanced_fallback_content(paper, file_plan, all_files)
-        if fallback_content:
-            self.logger.info(f"Using enhanced fallback content for {file_plan.path}")
-            return fallback_content, "Using enhanced fallback content due to LLM failures"
-        
-        return None, f"Failed to generate comprehensive content for {file_plan.path}"
+# Corrupted section removed - continuing with proper class definitions
 
 
 class Advanced360RepositoryGenerator:
@@ -3795,26 +4120,45 @@ async def main():
     logger = logging.getLogger(__name__)
     
     try:
-        # Initialize configuration
+        # Initialize configuration with GitHub Actions support
         config = Config(
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
-            github_token=os.getenv("GITHUB_TOKEN", ""),
-            github_username=os.getenv("GITHUB_USERNAME", ""),
+            github_token=os.getenv("GITHUB_TOKEN", os.getenv("GH_TOKEN", "")),  # Support both GITHUB_TOKEN and GH_TOKEN
+            github_username=os.getenv("GITHUB_USERNAME", os.getenv("GITHUB_ACTOR", "")),  # Use GITHUB_ACTOR in Actions
             huggingface_token=os.getenv("HUGGINGFACE_TOKEN", ""),
             arxiv_api_key=os.getenv("ARXIV_API_KEY", "")
         )
         
+        # GitHub Actions environment detection
+        is_github_actions = os.getenv("GITHUB_ACTIONS") == "true"
+        if is_github_actions:
+            logger.info("Running in GitHub Actions environment")
+            # Set GitHub Actions specific configurations
+            config.repo_visibility = os.getenv("REPO_VISIBILITY", "public")
+            config.max_concurrent_papers = min(config.max_concurrent_papers, 2)  # Limit concurrency in CI
+            
+            # GitHub Actions outputs
+            github_output = os.getenv("GITHUB_OUTPUT")
+            if github_output:
+                logger.info(f"GitHub Actions output file: {github_output}")
+        
         # Validate required configuration
+        missing_vars = []
         if not config.openrouter_api_key:
-            logger.error("OPENROUTER_API_KEY environment variable is required")
-            return
+            missing_vars.append("OPENROUTER_API_KEY")
         
         if not config.github_token:
-            logger.error("GITHUB_TOKEN environment variable is required")
-            return
+            missing_vars.append("GITHUB_TOKEN or GH_TOKEN")
         
         if not config.github_username:
-            logger.error("GITHUB_USERNAME environment variable is required")
+            missing_vars.append("GITHUB_USERNAME or GITHUB_ACTOR")
+        
+        if missing_vars:
+            error_msg = f"Missing required environment variables: {', '.join(missing_vars)}"
+            logger.error(error_msg)
+            if is_github_actions:
+                # Set GitHub Actions error annotation
+                print(f"::error::{error_msg}")
             return
         
         # Create necessary directories
