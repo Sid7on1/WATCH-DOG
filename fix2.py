@@ -92,7 +92,7 @@ class Config:
     
     # Paths
     base_dir: Path = Path(__file__).parent
-    papers_dir: Path = base_dir / "relevant_json"
+    papers_dir: Path = base_dir / "relevant_json"  # Default, can be overridden
     state_file: Path = base_dir / "managed_repos_state.json"
     workspace_dir: Path = base_dir / "workspace"
     logs_dir: Path = base_dir / "logs"
@@ -2768,58 +2768,356 @@ class PaperProcessor:
         self.logger = logger
 
     def load_papers_from_directory(self) -> List[PaperInfo]:
-        """Loads all papers from the papers directory."""
+        """Loads all papers from the papers directory and advanced_paper_extractor runs."""
         papers = []
         
-        if not self.config.papers_dir.exists():
-            self.logger.warning(f"Papers directory does not exist: {self.config.papers_dir}")
-            return papers
+        # Load from default papers_dir (legacy format)
+        if self.config.papers_dir.exists():
+            self.logger.info(f"Loading papers from legacy directory: {self.config.papers_dir}")
+            for json_file in self.config.papers_dir.glob("*.json"):
+                try:
+                    paper = self._load_paper_from_file(json_file)
+                    if paper:
+                        papers.append(paper)
+                except Exception as e:
+                    self.logger.error(f"Failed to load paper from {json_file}: {e}")
+        else:
+            self.logger.info(f"Legacy papers directory does not exist: {self.config.papers_dir}")
         
-        for json_file in self.config.papers_dir.glob("*.json"):
-            try:
-                paper = self._load_paper_from_file(json_file)
-                if paper:
-                    papers.append(paper)
-            except Exception as e:
-                self.logger.error(f"Failed to load paper from {json_file}: {e}")
+        # Also load from advanced_paper_extractor runs directory (new format)
+        runs_dir = self.config.base_dir / "runs"
+        if runs_dir.exists():
+            self.logger.info("Scanning advanced_paper_extractor runs directory...")
+            
+            # Find all run directories
+            for run_dir in runs_dir.iterdir():
+                if run_dir.is_dir():
+                    jsons_dir = run_dir / "jsons"
+                    if jsons_dir.exists():
+                        self.logger.info(f"Loading papers from {jsons_dir}")
+                        for json_file in jsons_dir.glob("*.json"):
+                            try:
+                                paper = self._load_paper_from_file(json_file)
+                                if paper:
+                                    # Check for duplicates by title
+                                    existing_titles = {p.title for p in papers}
+                                    if paper.title not in existing_titles:
+                                        papers.append(paper)
+                                    else:
+                                        self.logger.debug(f"Skipping duplicate paper: {paper.title[:50]}...")
+                            except Exception as e:
+                                self.logger.error(f"Failed to load paper from {json_file}: {e}")
+        else:
+            self.logger.info("No advanced_paper_extractor runs directory found")
         
-        self.logger.info(f"Loaded {len(papers)} papers from {self.config.papers_dir}")
+        self.logger.info(f"Loaded {len(papers)} unique papers total")
         return papers
 
     def _load_paper_from_file(self, file_path: Path) -> Optional[PaperInfo]:
-        """Loads a single paper from a JSON file."""
+        """Loads a single paper from a JSON file - compatible with both old and new advanced_paper_extractor formats."""
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            # Extract paper information with flexible field mapping
-            paper_id = data.get('id', file_path.stem)
-            title = data.get('title', data.get('paper_title', 'Unknown Title'))
-            summary = data.get('summary', data.get('abstract', data.get('description', '')))
-            authors = data.get('authors', data.get('author', []))
+            # Check if this is the new ExtractedPaperContent format from advanced_paper_extractor.py
+            if 'full_text' in data and 'llm_analysis' in data and 'relevance_score' in data:
+                # New format from advanced_paper_extractor.py
+                paper_id = data.get('arxiv_id', file_path.stem)
+                title = data.get('title', 'Unknown Title')
+                summary = data.get('abstract', '')
+                authors = data.get('authors', [])
+                
+                # Extract enhanced information from LLM analysis
+                llm_analysis = data.get('llm_analysis', '')
+                full_text = data.get('full_text', '')
+                
+                # Try to extract structured information from LLM analysis
+                methodology = self._extract_methodology_from_analysis(llm_analysis, full_text)
+                key_contributions = self._extract_contributions_from_analysis(llm_analysis, title)
+                technical_details = self._extract_technical_details_from_analysis(llm_analysis, full_text)
+                
+                paper = PaperInfo(
+                    id=paper_id,
+                    title=title,
+                    summary=summary,
+                    authors=authors,
+                    arxiv_id=data.get('arxiv_id'),
+                    publication_date=data.get('published'),
+                    methodology=methodology,
+                    key_contributions=key_contributions,
+                    technical_details=technical_details,
+                    source_path=file_path,
+                    last_modified=file_path.stat().st_mtime,
+                    # Enhanced fields from new format
+                    full_text=full_text,
+                    research_domain=self._infer_research_domain(data.get('categories', [])),
+                    complexity_level=self._infer_complexity_level(llm_analysis),
+                    implementation_difficulty=self._infer_implementation_difficulty(llm_analysis),
+                    mathematical_formulations=self._extract_equations_from_text(full_text),
+                    algorithm_pseudocode=self._extract_algorithms_from_analysis(llm_analysis),
+                    model_architecture=self._extract_architecture_from_analysis(llm_analysis),
+                    hyperparameters=self._extract_hyperparameters_from_analysis(llm_analysis),
+                    evaluation_metrics=self._extract_metrics_from_analysis(llm_analysis),
+                    experimental_setup=self._extract_experimental_setup_from_analysis(llm_analysis)
+                )
+                
+                self.logger.info(f"Loaded paper from new advanced_paper_extractor format: {title[:50]}...")
+                return paper
             
-            if isinstance(authors, str):
-                authors = [authors]
-            
-            paper = PaperInfo(
-                id=paper_id,
-                title=title,
-                summary=summary,
-                authors=authors,
-                arxiv_id=data.get('arxiv_id'),
-                publication_date=data.get('publication_date'),
-                methodology=data.get('methodology', data.get('method', '')),
-                key_contributions=data.get('key_contributions', data.get('contributions', [])),
-                technical_details=data.get('technical_details', data.get('details', '')),
-                source_path=file_path,
-                last_modified=file_path.stat().st_mtime
-            )
-            
-            return paper
+            else:
+                # Legacy format - existing logic
+                paper_id = data.get('id', file_path.stem)
+                title = data.get('title', data.get('paper_title', 'Unknown Title'))
+                summary = data.get('summary', data.get('abstract', data.get('description', '')))
+                authors = data.get('authors', data.get('author', []))
+                
+                if isinstance(authors, str):
+                    authors = [authors]
+                
+                paper = PaperInfo(
+                    id=paper_id,
+                    title=title,
+                    summary=summary,
+                    authors=authors,
+                    arxiv_id=data.get('arxiv_id'),
+                    publication_date=data.get('publication_date'),
+                    methodology=data.get('methodology', data.get('method', '')),
+                    key_contributions=data.get('key_contributions', data.get('contributions', [])),
+                    technical_details=data.get('technical_details', data.get('details', '')),
+                    source_path=file_path,
+                    last_modified=file_path.stat().st_mtime
+                )
+                
+                self.logger.info(f"Loaded paper from legacy format: {title[:50]}...")
+                return paper
             
         except Exception as e:
             self.logger.error(f"Error loading paper from {file_path}: {e}")
             return None
+
+    def _extract_methodology_from_analysis(self, llm_analysis: str, full_text: str) -> str:
+        """Extract methodology information from LLM analysis."""
+        if not llm_analysis:
+            return ""
+        
+        # Look for methodology-related keywords in the analysis
+        methodology_keywords = ["method", "approach", "algorithm", "technique", "procedure", "framework"]
+        lines = llm_analysis.split('\n')
+        methodology_lines = []
+        
+        for line in lines:
+            if any(keyword in line.lower() for keyword in methodology_keywords):
+                methodology_lines.append(line.strip())
+        
+        return ' '.join(methodology_lines[:3])  # Take first 3 relevant lines
+
+    def _extract_contributions_from_analysis(self, llm_analysis: str, title: str) -> List[str]:
+        """Extract key contributions from LLM analysis."""
+        if not llm_analysis:
+            return []
+        
+        contributions = []
+        lines = llm_analysis.split('\n')
+        
+        # Look for contribution-related sections
+        for i, line in enumerate(lines):
+            if any(keyword in line.lower() for keyword in ["contribution", "novel", "propose", "introduce"]):
+                contributions.append(line.strip())
+                # Add next line if it seems related
+                if i + 1 < len(lines) and len(lines[i + 1].strip()) > 20:
+                    contributions.append(lines[i + 1].strip())
+        
+        return contributions[:5]  # Limit to 5 contributions
+
+    def _extract_technical_details_from_analysis(self, llm_analysis: str, full_text: str) -> str:
+        """Extract technical details from LLM analysis."""
+        if not llm_analysis:
+            return ""
+        
+        # Look for technical sections
+        technical_keywords = ["architecture", "implementation", "model", "network", "layer", "parameter"]
+        lines = llm_analysis.split('\n')
+        technical_lines = []
+        
+        for line in lines:
+            if any(keyword in line.lower() for keyword in technical_keywords):
+                technical_lines.append(line.strip())
+        
+        return ' '.join(technical_lines[:5])  # Take first 5 relevant lines
+
+    def _infer_research_domain(self, categories: List[str]) -> str:
+        """Infer research domain from arXiv categories."""
+        if not categories:
+            return "Machine Learning"
+        
+        domain_mapping = {
+            "cs.AI": "Artificial Intelligence",
+            "cs.LG": "Machine Learning", 
+            "cs.CL": "Natural Language Processing",
+            "cs.CV": "Computer Vision",
+            "cs.NE": "Neural Networks",
+            "stat.ML": "Statistical Machine Learning"
+        }
+        
+        for cat in categories:
+            if cat in domain_mapping:
+                return domain_mapping[cat]
+        
+        return "Machine Learning"
+
+    def _infer_complexity_level(self, llm_analysis: str) -> str:
+        """Infer complexity level from LLM analysis."""
+        if not llm_analysis:
+            return "medium"
+        
+        analysis_lower = llm_analysis.lower()
+        
+        # High complexity indicators
+        if any(keyword in analysis_lower for keyword in ["complex", "sophisticated", "advanced", "novel architecture"]):
+            return "high"
+        
+        # Low complexity indicators  
+        if any(keyword in analysis_lower for keyword in ["simple", "basic", "straightforward", "standard"]):
+            return "low"
+        
+        return "medium"
+
+    def _infer_implementation_difficulty(self, llm_analysis: str) -> str:
+        """Infer implementation difficulty from LLM analysis."""
+        if not llm_analysis:
+            return "medium"
+        
+        analysis_lower = llm_analysis.lower()
+        
+        # High difficulty indicators
+        if any(keyword in analysis_lower for keyword in ["challenging", "difficult", "complex implementation", "requires"]):
+            return "high"
+        
+        # Low difficulty indicators
+        if any(keyword in analysis_lower for keyword in ["simple", "easy", "straightforward", "standard implementation"]):
+            return "low"
+        
+        return "medium"
+
+    def _extract_equations_from_text(self, full_text: str) -> List[str]:
+        """Extract mathematical equations from full text."""
+        if not full_text:
+            return []
+        
+        equations = []
+        # Look for LaTeX-style equations
+        import re
+        
+        # Find equations between $...$ or $$...$$
+        equation_patterns = [
+            r'\$\$([^$]+)\$\$',  # Display equations
+            r'\$([^$]+)\$',      # Inline equations
+            r'\\begin\{equation\}(.*?)\\end\{equation\}',  # Equation environments
+            r'\\begin\{align\}(.*?)\\end\{align\}'         # Align environments
+        ]
+        
+        for pattern in equation_patterns:
+            matches = re.findall(pattern, full_text, re.DOTALL)
+            equations.extend([match.strip() for match in matches if len(match.strip()) > 5])
+        
+        return equations[:10]  # Limit to 10 equations
+
+    def _extract_algorithms_from_analysis(self, llm_analysis: str) -> List[str]:
+        """Extract algorithm descriptions from LLM analysis."""
+        if not llm_analysis:
+            return []
+        
+        algorithms = []
+        lines = llm_analysis.split('\n')
+        
+        for line in lines:
+            if any(keyword in line.lower() for keyword in ["algorithm", "procedure", "step", "process"]):
+                algorithms.append(line.strip())
+        
+        return algorithms[:5]
+
+    def _extract_architecture_from_analysis(self, llm_analysis: str) -> Dict[str, Any]:
+        """Extract model architecture details from LLM analysis."""
+        if not llm_analysis:
+            return {}
+        
+        architecture = {}
+        analysis_lower = llm_analysis.lower()
+        
+        # Look for common architecture components
+        if "transformer" in analysis_lower:
+            architecture["type"] = "transformer"
+        elif "cnn" in analysis_lower or "convolutional" in analysis_lower:
+            architecture["type"] = "cnn"
+        elif "rnn" in analysis_lower or "recurrent" in analysis_lower:
+            architecture["type"] = "rnn"
+        else:
+            architecture["type"] = "neural_network"
+        
+        # Extract layer information
+        if "layer" in analysis_lower:
+            import re
+            layer_matches = re.findall(r'(\d+)\s*layer', analysis_lower)
+            if layer_matches:
+                architecture["num_layers"] = int(layer_matches[0])
+        
+        return architecture
+
+    def _extract_hyperparameters_from_analysis(self, llm_analysis: str) -> Dict[str, Any]:
+        """Extract hyperparameters from LLM analysis."""
+        if not llm_analysis:
+            return {}
+        
+        hyperparams = {}
+        
+        # Look for common hyperparameters
+        import re
+        
+        # Learning rate
+        lr_matches = re.findall(r'learning.rate[:\s]*([0-9.e-]+)', llm_analysis.lower())
+        if lr_matches:
+            hyperparams["learning_rate"] = float(lr_matches[0])
+        
+        # Batch size
+        batch_matches = re.findall(r'batch.size[:\s]*([0-9]+)', llm_analysis.lower())
+        if batch_matches:
+            hyperparams["batch_size"] = int(batch_matches[0])
+        
+        # Epochs
+        epoch_matches = re.findall(r'epoch[s]?[:\s]*([0-9]+)', llm_analysis.lower())
+        if epoch_matches:
+            hyperparams["epochs"] = int(epoch_matches[0])
+        
+        return hyperparams
+
+    def _extract_metrics_from_analysis(self, llm_analysis: str) -> List[str]:
+        """Extract evaluation metrics from LLM analysis."""
+        if not llm_analysis:
+            return []
+        
+        metrics = []
+        common_metrics = ["accuracy", "precision", "recall", "f1", "bleu", "rouge", "perplexity", "loss"]
+        
+        analysis_lower = llm_analysis.lower()
+        for metric in common_metrics:
+            if metric in analysis_lower:
+                metrics.append(metric)
+        
+        return metrics
+
+    def _extract_experimental_setup_from_analysis(self, llm_analysis: str) -> str:
+        """Extract experimental setup from LLM analysis."""
+        if not llm_analysis:
+            return ""
+        
+        lines = llm_analysis.split('\n')
+        setup_lines = []
+        
+        for line in lines:
+            if any(keyword in line.lower() for keyword in ["experiment", "evaluation", "dataset", "setup", "benchmark"]):
+                setup_lines.append(line.strip())
+        
+        return ' '.join(setup_lines[:3])
 
     def generate_repo_name(self, paper: PaperInfo) -> str:
         """Generates a repository name from paper information."""
