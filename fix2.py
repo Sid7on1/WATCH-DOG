@@ -4609,6 +4609,9 @@ async def main():
     # Load environment variables
     load_dotenv()
     
+    # Create logs directory first
+    os.makedirs('logs', exist_ok=True)
+    
     # Setup logging
     logging.basicConfig(
         level=logging.INFO,
