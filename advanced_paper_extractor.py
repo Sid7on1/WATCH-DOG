@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
 """
-Advanced Paper Content Extractor - Extracts actual content from research papers
-using intelligent chunking and LLM analysis for paper-specific implementations.
-
-Features:
-- Robust PDF text extraction with multiple fallbacks
-- Intelligent text chunking for LLM processing
-- Free-tier friendly with rate limiting and delays
-- Advanced content analysis using OpenRouter LLMs
-- Comprehensive error handling and recovery
-- Progress tracking and resumable processing
+Advanced Paper Content Extractor - Complete WATCHDOG_memory Integration
+Fetches seen_titles.txt from repo, processes papers, pushes all artifacts back
 """
 
 import os
@@ -30,177 +22,144 @@ import arxiv
 from tqdm import tqdm
 import tiktoken
 from dotenv import load_dotenv
-import tempfile
-import shutil
-import random
+import base64
 
 
 @dataclass
 class ExtractionConfig:
-    """Configuration for complete paper extraction and filtering process."""
+    """Configuration for complete paper extraction and WATCHDOG_memory integration."""
     # OpenRouter API settings
     openrouter_api_key: str
-    model: str = "deepseek/deepseek-r1-0528:free"  # Free model
+    model: str = "meta-llama/llama-3.2-3b-instruct:free"  # FREE model, not cheaper
     temperature: float = 0.1
-    max_tokens: int = 50  # Extremely reduced to save credits
+    max_tokens: int = 4000  # Higher for free model
     
-    # Rate limiting for free tier
-    requests_per_minute: int = 8  # Conservative for free tier
-    delay_between_requests: float = 8.0  # 8 seconds between requests
+    # Rate limiting with specified delays
+    chunk_delay: float = 23.0  # 23 seconds between chunks
+    paper_delay: float = 35.0  # 35 seconds between papers
     max_retries: int = 3
-    backoff_factor: float = 2.0
     
-    # ArXiv API settings
-    arxiv_base_url: str = "http://export.arxiv.org/api/query"
-    max_papers_per_query: int = 50
-    days_back: int = 7  # Look back 7 days for new papers
+    # Processing limits
+    max_tries_per_domain: int = 6  # Max 6 tries per domain
+    min_relevant_papers: int = 1   # Process at least 1 relevant paper
     
-    # Research domains and keywords
+    # WATCHDOG_memory integration
+    github_token: str = ""
+    github_username: str = "Sid7on1"
+    watchdog_repo_name: str = "WATCHDOG_memory"
+    seen_titles_url: str = "https://raw.githubusercontent.com/Sid7on1/WATCHDOG_memory/main/seen_titles.txt"
+    
+    # ArXiv settings
+    days_back: int = 7
     target_domains: List[str] = field(default_factory=lambda: [
-        "cs.AI", "cs.LG", "cs.CV", "cs.CL", "cs.NE", "stat.ML"
+        "cs.AI", "cs.LG", "cs.CL", "cs.CV", "cs.NE", "stat.ML"  # Expanded domains
     ])
     relevance_keywords: List[str] = field(default_factory=lambda: [
-        "machine learning", "deep learning", "neural network", "transformer",
-        "attention", "computer vision", "natural language processing",
-        "reinforcement learning", "generative", "diffusion", "LLM"
+        # Core Transformer & LLM terms
+        "transformer", "attention", "self-attention", "cross-attention", "multi-head attention",
+        "language model", "LLM", "large language model", "BERT", "GPT", "T5", "LLAMA",
+        
+        # Architecture components
+        "FFN", "feed forward", "feedforward", "MLP", "multi-layer perceptron",
+        "layer norm", "layernorm", "normalization", "residual connection", "skip connection",
+        "positional encoding", "embedding", "token", "tokenization",
+        
+        # Training & Optimization
+        "gradient", "backpropagation", "optimization", "adam", "learning rate",
+        "fine-tuning", "pre-training", "training", "loss function", "regularization",
+        
+        # Advanced concepts
+        "vision language", "multimodal", "vision transformer", "ViT", "CLIP",
+        "diffusion", "generative", "autoregressive", "encoder-decoder",
+        "reasoning", "chain of thought", "in-context learning", "few-shot", "zero-shot",
+        
+        # AI Agents & Applications
+        "agentic", "ai agent", "multi-agent", "autonomous", "planning", "tool use",
+        "retrieval", "RAG", "knowledge", "memory", "instruction following",
+        
+        # Performance & Efficiency
+        "efficient", "optimization", "compression", "quantization", "pruning",
+        "scaling", "parameter efficient", "LoRA", "adapter", "distillation",
+        
+        # Emerging areas
+        "mixture of experts", "MoE", "sparse", "routing", "gating",
+        "reinforcement learning", "RLHF", "alignment", "safety", "neural architecture"
     ])
     
-    # Chunking settings
-    max_chunk_size: int = 3000  # Tokens per chunk
-    chunk_overlap: int = 200    # Overlap between chunks
-    
-    # Processing settings
-    enable_caching: bool = True
-    cache_dir: Path = Path("extraction_cache")
-    resume_on_failure: bool = True
-    
     # Output settings
-    save_intermediate: bool = True
+    relevance_threshold: float = 0.3  # Very low threshold - include papers with potential
     verbose: bool = True
-    
-    # Directories
-    pdf_output_dir: Path = Path("relevant_pdfs")
-    json_output_dir: Path = Path("relevant_json")
-    
-    # Relevance filtering
-    relevance_threshold: float = 0.7  # Minimum relevance score (0-1)
-    enable_relevance_filtering: bool = True
-
-
-@dataclass
-class TextChunk:
-    """Represents a chunk of text for processing."""
-    content: str
-    chunk_id: int
-    section: str
-    start_page: int
-    end_page: int
-    token_count: int
-    processed: bool = False
-    analysis_result: Optional[Dict[str, Any]] = None
 
 
 @dataclass
 class ExtractedPaperContent:
-    """Comprehensive content extracted from a research paper."""
-    # Basic information
+    """Complete paper content for fix2.py processing."""
     title: str
     abstract: str
     authors: List[str] = field(default_factory=list)
-    publication_info: Dict[str, str] = field(default_factory=dict)
+    arxiv_id: str = ""
+    pdf_url: str = ""
+    categories: List[str] = field(default_factory=list)
+    published: str = ""
     
-    # Full content
+    # Full extracted content
     full_text: str = ""
-    sections: Dict[str, str] = field(default_factory=dict)
+    llm_analysis: str = ""  # Raw LLM response (not JSON)
+    relevance_score: float = 0.0
+    relevance_reasoning: str = ""
     
-    # Technical content
-    mathematical_formulations: List[Dict[str, str]] = field(default_factory=list)
-    algorithms: List[Dict[str, str]] = field(default_factory=list)
-    model_architectures: List[Dict[str, Any]] = field(default_factory=list)
-    
-    # Implementation details
-    hyperparameters: Dict[str, Any] = field(default_factory=dict)
-    loss_functions: List[str] = field(default_factory=list)
-    optimization_details: Dict[str, Any] = field(default_factory=dict)
-    
-    # Experimental details
-    datasets_used: List[str] = field(default_factory=list)
-    evaluation_metrics: List[str] = field(default_factory=list)
-    experimental_setup: str = ""
-    results_summary: str = ""
-    
-    # References and related work
-    key_references: List[str] = field(default_factory=list)
-    related_methods: List[str] = field(default_factory=list)
-    
-    # Figures and tables
-    figures: List[Dict[str, str]] = field(default_factory=list)
-    tables: List[Dict[str, str]] = field(default_factory=list)
-    
-    # Code and implementation hints
-    code_snippets: List[str] = field(default_factory=list)
-    implementation_notes: List[str] = field(default_factory=list)
-    
-    # Metadata
-    extraction_timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
-    processing_stats: Dict[str, Any] = field(default_factory=dict)
+    # Processing metadata
+    extraction_method: str = ""
+    processing_time: float = 0.0
+    chunks_processed: int = 0
+    token_count: int = 0
 
 
 class AdvancedPaperExtractor:
-    """Advanced paper content extractor with LLM analysis."""
+    """Complete ArXiv paper extractor with WATCHDOG_memory integration."""
     
     def __init__(self, config: ExtractionConfig):
         self.config = config
         self.logger = self._setup_logging()
         self.session: Optional[aiohttp.ClientSession] = None
-        self.tokenizer = tiktoken.get_encoding("cl100k_base")  # GPT-4 tokenizer
+        self.tokenizer = tiktoken.get_encoding("cl100k_base")
         
-        # Rate limiting
-        self.last_request_time = 0
-        self.request_count = 0
-        self.request_times = []
+        # Tracking
+        self.seen_titles = set()
+        self.processed_papers = []
+        self.run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Caching
-        if self.config.enable_caching:
-            self.config.cache_dir.mkdir(exist_ok=True)
+        # Output directories
+        self.run_dir = Path(f"runs/{self.run_timestamp}")
+        self.pdf_dir = self.run_dir / "pdfs"
+        self.json_dir = self.run_dir / "jsons"
+        self.text_dir = self.run_dir / "texts"
         
-        # Progress tracking
-        self.progress_file = Path("extraction_progress.json")
+        # Create directories
+        for dir_path in [self.run_dir, self.pdf_dir, self.json_dir, self.text_dir]:
+            dir_path.mkdir(parents=True, exist_ok=True)
     
     def _setup_logging(self) -> logging.Logger:
-        """Setup comprehensive logging."""
+        """Setup logging."""
         logger = logging.getLogger("PaperExtractor")
-        logger.setLevel(logging.DEBUG if self.config.verbose else logging.INFO)
+        logger.setLevel(logging.INFO if self.config.verbose else logging.WARNING)
         
-        # File handler
-        log_file = Path("paper_extraction.log")
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(logging.DEBUG)
-        
-        # Console handler
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-        
-        # Formatter
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        file_handler.setFormatter(formatter)
-        console_handler.setFormatter(formatter)
-        
-        logger.addHandler(file_handler)
-        logger.addHandler(console_handler)
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
         
         return logger
     
     async def __aenter__(self):
         """Async context manager entry."""
         self.session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=300),
+            timeout=aiohttp.ClientTimeout(total=600),
             headers={
                 "Authorization": f"Bearer {self.config.openrouter_api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "AdvancedPaperExtractor/1.0"
+                "User-Agent": "AdvancedPaperExtractor/2.0"
             }
         )
         return self
@@ -210,287 +169,116 @@ class AdvancedPaperExtractor:
         if self.session:
             await self.session.close()
     
-    def extract_text_from_pdf(self, pdf_path: Union[str, Path]) -> Tuple[str, Dict[str, Any]]:
-        """Extract text from PDF with multiple fallback methods."""
-        pdf_path = Path(pdf_path)
-        if not pdf_path.exists():
-            raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+    async def fetch_seen_titles_from_repo(self) -> set:
+        """Fetch seen_titles.txt from WATCHDOG_memory repo."""
+        print("📥 Fetching seen_titles.txt from WATCHDOG_memory repo...")
         
-        self.logger.info(f"Extracting text from PDF: {pdf_path}")
-        
-        extraction_stats = {
-            "file_size": pdf_path.stat().st_size,
-            "extraction_method": None,
-            "pages_processed": 0,
-            "extraction_time": 0
-        }
-        
+        try:
+            async with self.session.get(self.config.seen_titles_url) as response:
+                if response.status == 200:
+                    content = await response.text()
+                    titles = set(line.strip() for line in content.split('\n') if line.strip())
+                    print(f"✅ Loaded {len(titles)} seen titles from WATCHDOG_memory repo")
+                    return titles
+                else:
+                    print(f"⚠️  Could not fetch seen_titles.txt (status: {response.status})")
+                    return set()
+        except Exception as e:
+            print(f"❌ Failed to fetch seen_titles.txt: {e}")
+            return set()
+    
+    def extract_text_from_pdf(self, pdf_path: Path) -> Tuple[str, Dict[str, Any]]:
+        """Extract text from PDF with multiple methods."""
+        stats = {"method": None, "pages": 0, "chars": 0, "time": 0}
         start_time = time.time()
         
-        # Method 1: PyMuPDF (fitz) - Best for most PDFs
+        # Method 1: PyMuPDF
         try:
-            text, pages = self._extract_with_pymupdf(pdf_path)
-            if text and len(text.strip()) > 100:
-                extraction_stats["extraction_method"] = "PyMuPDF"
-                extraction_stats["pages_processed"] = pages
-                extraction_stats["extraction_time"] = time.time() - start_time
-                self.logger.info(f"Successfully extracted {len(text)} characters using PyMuPDF")
-                return text, extraction_stats
-        except Exception as e:
-            self.logger.warning(f"PyMuPDF extraction failed: {e}")
-        
-        # Method 2: PyPDF2 - Fallback
-        try:
-            text, pages = self._extract_with_pypdf2(pdf_path)
-            if text and len(text.strip()) > 100:
-                extraction_stats["extraction_method"] = "PyPDF2"
-                extraction_stats["pages_processed"] = pages
-                extraction_stats["extraction_time"] = time.time() - start_time
-                self.logger.info(f"Successfully extracted {len(text)} characters using PyPDF2")
-                return text, extraction_stats
-        except Exception as e:
-            self.logger.warning(f"PyPDF2 extraction failed: {e}")
-        
-        # Method 3: OCR fallback (if available)
-        try:
-            text, pages = self._extract_with_ocr(pdf_path)
-            if text and len(text.strip()) > 100:
-                extraction_stats["extraction_method"] = "OCR"
-                extraction_stats["pages_processed"] = pages
-                extraction_stats["extraction_time"] = time.time() - start_time
-                self.logger.info(f"Successfully extracted {len(text)} characters using OCR")
-                return text, extraction_stats
-        except Exception as e:
-            self.logger.warning(f"OCR extraction failed: {e}")
-        
-        raise Exception("All text extraction methods failed")
-    
-    def _extract_with_pymupdf(self, pdf_path: Path) -> Tuple[str, int]:
-        """Extract text using PyMuPDF."""
-        doc = fitz.open(str(pdf_path))
-        text_parts = []
-        
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            text = page.get_text()
-            
-            # Clean up text
-            text = self._clean_extracted_text(text)
-            if text.strip():
-                text_parts.append(f"--- Page {page_num + 1} ---\n{text}\n")
-        
-        doc.close()
-        return "\n".join(text_parts), len(doc)
-    
-    def _extract_with_pypdf2(self, pdf_path: Path) -> Tuple[str, int]:
-        """Extract text using PyPDF2."""
-        text_parts = []
-        
-        with open(pdf_path, 'rb') as file:
-            pdf_reader = PyPDF2.PdfReader(file)
-            
-            for page_num, page in enumerate(pdf_reader.pages):
-                text = page.extract_text()
-                text = self._clean_extracted_text(text)
-                if text.strip():
-                    text_parts.append(f"--- Page {page_num + 1} ---\n{text}\n")
-        
-        return "\n".join(text_parts), len(pdf_reader.pages)
-    
-    def _extract_with_ocr(self, pdf_path: Path) -> Tuple[str, int]:
-        """Extract text using OCR (requires pytesseract and pdf2image)."""
-        try:
-            import pytesseract
-            from pdf2image import convert_from_path
-            
-            # Convert PDF to images
-            images = convert_from_path(str(pdf_path))
+            doc = fitz.open(pdf_path)
             text_parts = []
             
-            for page_num, image in enumerate(images):
-                text = pytesseract.image_to_string(image)
-                text = self._clean_extracted_text(text)
+            for page_num in range(len(doc)):
+                page = doc.load_page(page_num)
+                text = page.get_text()
                 if text.strip():
                     text_parts.append(f"--- Page {page_num + 1} ---\n{text}\n")
             
-            return "\n".join(text_parts), len(images)
+            doc.close()
             
-        except ImportError:
-            raise Exception("OCR dependencies not installed (pytesseract, pdf2image)")
-    
-    def _clean_extracted_text(self, text: str) -> str:
-        """Clean and normalize extracted text."""
-        if not text:
-            return ""
+            if text_parts:
+                full_text = "\n".join(text_parts)
+                stats.update({
+                    "method": "PyMuPDF",
+                    "pages": len(doc),
+                    "chars": len(full_text),
+                    "time": time.time() - start_time
+                })
+                return full_text, stats
+        except Exception as e:
+            self.logger.warning(f"PyMuPDF failed: {e}")
         
-        # Remove excessive whitespace
-        text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)
-        text = re.sub(r' +', ' ', text)
-        
-        # Fix common PDF extraction issues
-        text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)  # Add space between words
-        text = re.sub(r'(\w)-\s*\n\s*(\w)', r'\1\2', text)  # Fix hyphenated words
-        
-        # Remove page headers/footers (common patterns)
-        lines = text.split('\n')
-        cleaned_lines = []
-        
-        for line in lines:
-            line = line.strip()
-            # Skip likely headers/footers
-            if (len(line) < 5 or 
-                re.match(r'^\d+$', line) or  # Page numbers
-                re.match(r'^Page \d+', line, re.IGNORECASE) or
-                line.lower() in ['abstract', 'introduction', 'conclusion', 'references']):
-                continue
-            cleaned_lines.append(line)
-        
-        return '\n'.join(cleaned_lines)
-    
-    def create_text_chunks(self, text: str) -> List[TextChunk]:
-        """Create intelligent text chunks for LLM processing."""
-        self.logger.info("Creating text chunks for LLM processing")
-        
-        # First, split by sections if possible
-        sections = self._identify_sections(text)
-        chunks = []
-        chunk_id = 0
-        
-        for section_name, section_text in sections.items():
-            # Calculate tokens for this section
-            tokens = len(self.tokenizer.encode(section_text))
-            
-            if tokens <= self.config.max_chunk_size:
-                # Section fits in one chunk
-                chunks.append(TextChunk(
-                    content=section_text,
-                    chunk_id=chunk_id,
-                    section=section_name,
-                    start_page=0,  # Would need page tracking
-                    end_page=0,
-                    token_count=tokens
-                ))
-                chunk_id += 1
-            else:
-                # Split section into smaller chunks
-                section_chunks = self._split_text_by_tokens(
-                    section_text, 
-                    self.config.max_chunk_size,
-                    self.config.chunk_overlap
-                )
+        # Method 2: PyPDF2
+        try:
+            with open(pdf_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                text_parts = []
                 
-                for i, chunk_text in enumerate(section_chunks):
-                    chunks.append(TextChunk(
-                        content=chunk_text,
-                        chunk_id=chunk_id,
-                        section=f"{section_name}_part_{i+1}",
-                        start_page=0,
-                        end_page=0,
-                        token_count=len(self.tokenizer.encode(chunk_text))
-                    ))
-                    chunk_id += 1
+                for page_num, page in enumerate(pdf_reader.pages):
+                    text = page.extract_text()
+                    if text.strip():
+                        text_parts.append(f"--- Page {page_num + 1} ---\n{text}\n")
+                
+                if text_parts:
+                    full_text = "\n".join(text_parts)
+                    stats.update({
+                        "method": "PyPDF2",
+                        "pages": len(pdf_reader.pages),
+                        "chars": len(full_text),
+                        "time": time.time() - start_time
+                    })
+                    return full_text, stats
+        except Exception as e:
+            self.logger.warning(f"PyPDF2 failed: {e}")
         
-        self.logger.info(f"Created {len(chunks)} text chunks")
-        return chunks
+        raise Exception("All PDF extraction methods failed")
     
-    def _identify_sections(self, text: str) -> Dict[str, str]:
-        """Identify and extract sections from the paper."""
-        sections = {"full_text": text}  # Fallback
+    async def call_llm(self, text: str, is_chunk: bool = False) -> Tuple[str, Optional[str]]:
+        """Call FREE LLM model via OpenRouter."""
+        system_prompt = """You are a research paper analyzer. Analyze the given research paper content and provide:
+
+1. A comprehensive technical summary
+2. Key algorithms and methods described
+3. Important equations and formulas
+4. Model architectures and components
+5. Datasets and evaluation metrics used
+6. Implementation details and insights
+7. Main contributions and novelty
+
+Provide a detailed analysis in plain text format. Be thorough and technical."""
         
-        # Common section headers
-        section_patterns = [
-            r'(?i)^\s*(abstract)\s*$',
-            r'(?i)^\s*(\d+\.?\s*introduction)\s*$',
-            r'(?i)^\s*(\d+\.?\s*related\s+work)\s*$',
-            r'(?i)^\s*(\d+\.?\s*method(?:ology)?)\s*$',
-            r'(?i)^\s*(\d+\.?\s*approach)\s*$',
-            r'(?i)^\s*(\d+\.?\s*model)\s*$',
-            r'(?i)^\s*(\d+\.?\s*experiment(?:s|al\s+setup)?)\s*$',
-            r'(?i)^\s*(\d+\.?\s*results?)\s*$',
-            r'(?i)^\s*(\d+\.?\s*evaluation)\s*$',
-            r'(?i)^\s*(\d+\.?\s*discussion)\s*$',
-            r'(?i)^\s*(\d+\.?\s*conclusion)\s*$',
-            r'(?i)^\s*(references)\s*$',
+        if is_chunk:
+            user_prompt = f"""Analyze this section of a research paper:
+
+{text}
+
+Provide detailed technical analysis focusing on the content in this section."""
+        else:
+            user_prompt = f"""Analyze this complete research paper:
+
+{text}
+
+Provide comprehensive technical analysis covering all aspects of the paper."""
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
         ]
-        
-        # Find section boundaries
-        lines = text.split('\n')
-        section_starts = []
-        
-        for i, line in enumerate(lines):
-            for pattern in section_patterns:
-                if re.match(pattern, line.strip()):
-                    section_name = re.match(pattern, line.strip()).group(1).strip()
-                    section_starts.append((i, section_name.lower()))
-                    break
-        
-        # Extract sections
-        if section_starts:
-            sections = {}
-            for i, (start_line, section_name) in enumerate(section_starts):
-                end_line = section_starts[i + 1][0] if i + 1 < len(section_starts) else len(lines)
-                section_text = '\n'.join(lines[start_line:end_line])
-                sections[section_name] = section_text
-        
-        return sections
-    
-    def _split_text_by_tokens(self, text: str, max_tokens: int, overlap: int) -> List[str]:
-        """Split text into chunks by token count with overlap."""
-        tokens = self.tokenizer.encode(text)
-        chunks = []
-        
-        start = 0
-        while start < len(tokens):
-            end = min(start + max_tokens, len(tokens))
-            chunk_tokens = tokens[start:end]
-            chunk_text = self.tokenizer.decode(chunk_tokens)
-            chunks.append(chunk_text)
-            
-            if end >= len(tokens):
-                break
-            
-            start = end - overlap
-        
-        return chunks
-    
-    async def _rate_limit_check(self):
-        """Check and enforce rate limits for free tier."""
-        current_time = time.time()
-        
-        # Remove old request times (older than 1 minute)
-        self.request_times = [t for t in self.request_times if current_time - t < 60]
-        
-        # Check if we're at the limit
-        if len(self.request_times) >= self.config.requests_per_minute:
-            sleep_time = 60 - (current_time - self.request_times[0])
-            if sleep_time > 0:
-                self.logger.info(f"Rate limit reached, sleeping for {sleep_time:.1f} seconds")
-                await asyncio.sleep(sleep_time)
-        
-        # Ensure minimum delay between requests
-        time_since_last = current_time - self.last_request_time
-        if time_since_last < self.config.delay_between_requests:
-            sleep_time = self.config.delay_between_requests - time_since_last
-            self.logger.debug(f"Enforcing delay: sleeping for {sleep_time:.1f} seconds")
-            await asyncio.sleep(sleep_time)
-        
-        self.request_times.append(time.time())
-        self.last_request_time = time.time()
-    
-    async def _call_llm(self, prompt: str, system_prompt: str = None) -> Tuple[Optional[str], Optional[str]]:
-        """Call OpenRouter LLM with rate limiting and error handling."""
-        await self._rate_limit_check()
-        
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
         
         payload = {
             "model": self.config.model,
             "messages": messages,
             "temperature": self.config.temperature,
-            "max_tokens": self.config.max_tokens,
+            "max_tokens": self.config.max_tokens
         }
         
         for attempt in range(self.config.max_retries):
@@ -499,279 +287,92 @@ class AdvancedPaperExtractor:
                     "https://openrouter.ai/api/v1/chat/completions",
                     json=payload
                 ) as response:
-                    if response.status == 429:
-                        retry_after = int(response.headers.get("Retry-After", 60))
-                        self.logger.warning(f"Rate limited, waiting {retry_after} seconds")
-                        await asyncio.sleep(retry_after)
-                        continue
-                    
                     if response.status == 200:
                         data = await response.json()
                         if 'choices' in data and len(data['choices']) > 0:
                             content = data['choices'][0]['message']['content']
                             if content and content.strip():
-                                return content, None
+                                return content.strip(), None
                             else:
-                                self.logger.warning("LLM returned empty content")
-                                return None, "Empty response from LLM"
+                                return "", "Empty response from LLM"
                         else:
-                            self.logger.error(f"Unexpected API response format: {data}")
-                            return None, "Invalid API response format"
+                            return "", "Invalid API response format"
                     else:
                         error_text = await response.text()
-                        self.logger.error(f"LLM API error {response.status}: {error_text}")
-                        if response.status == 401:
-                            return None, "Invalid API key"
-                        elif response.status == 402:
-                            return None, "Insufficient credits"
-                        elif response.status == 404:
-                            return None, f"Model {self.config.model} not found"
+                        if "token" in error_text.lower() and "limit" in error_text.lower():
+                            return "", "TOKEN_LIMIT_EXCEEDED"
+                        return "", f"API error {response.status}: {error_text}"
                         
             except Exception as e:
                 self.logger.error(f"LLM call failed (attempt {attempt + 1}): {e}")
                 if attempt < self.config.max_retries - 1:
-                    sleep_time = self.config.backoff_factor ** attempt
-                    await asyncio.sleep(sleep_time)
+                    await asyncio.sleep(2 ** attempt)
         
-        return None, f"Failed after {self.config.max_retries} attempts"
+        return "", f"Failed after {self.config.max_retries} attempts"
     
-    async def analyze_chunk(self, chunk: TextChunk) -> Dict[str, Any]:
-        """Analyze a text chunk - fallback to text extraction when no credits."""
-        cache_key = hashlib.md5(chunk.content.encode()).hexdigest()
-        cache_file = self.config.cache_dir / f"chunk_{cache_key}.json"
+    def chunk_text(self, text: str, max_tokens: int = 3000) -> List[str]:
+        """Split text into chunks by token count."""
+        tokens = self.tokenizer.encode(text)
+        chunks = []
         
-        # Check cache first
-        if self.config.enable_caching and cache_file.exists():
-            try:
-                with open(cache_file, 'r') as f:
-                    cached_result = json.load(f)
-                self.logger.debug(f"Using cached analysis for chunk {chunk.chunk_id}")
-                return cached_result
-            except Exception as e:
-                self.logger.warning(f"Failed to load cache: {e}")
+        for i in range(0, len(tokens), max_tokens):
+            chunk_tokens = tokens[i:i + max_tokens]
+            chunk_text = self.tokenizer.decode(chunk_tokens)
+            chunks.append(chunk_text)
         
-        self.logger.info(f"Analyzing chunk {chunk.chunk_id} ({chunk.section})")
-        
-        # Try LLM analysis first
-        system_prompt = """You are a research paper analyzer. Extract key technical information from the given text chunk in a simple, readable format."""
-        
-        user_prompt = f"""Analyze this section from a research paper and extract key technical details:
-
-Section: {chunk.section}
-Content:
-{chunk.content[:1000]}...
-
-Provide a concise summary focusing on:
-- Key algorithms or methods
-- Important equations or formulas  
-- Model architecture details
-- Hyperparameters and settings
-- Datasets and evaluation metrics
-- Implementation details
-
-Keep the response concise and technical."""
-        
-        content, error = await self._call_llm(user_prompt, system_prompt)
-        
-        if error and "Insufficient credits" in error:
-            # Fallback to simple text extraction when no credits
-            self.logger.info(f"No credits available, using text extraction fallback for chunk {chunk.chunk_id}")
-            content = self._extract_key_info_from_text(chunk.content)
-        elif error:
-            self.logger.error(f"Failed to analyze chunk {chunk.chunk_id}: {error}")
-            return {"error": error}
-        
-        # Return the analysis
-        analysis = {
-            "chunk_id": chunk.chunk_id,
-            "section": chunk.section,
-            "analysis": content,
-            "token_count": chunk.token_count
-        }
-        
-        # Cache the result
-        if self.config.enable_caching:
-            with open(cache_file, 'w') as f:
-                json.dump(analysis, f, indent=2)
-        
-        return analysis
+        return chunks
     
-    def _extract_key_info_from_text(self, text: str) -> str:
-        """Extract key information from text without LLM (fallback method)."""
-        lines = text.split('\n')
-        key_info = []
+    async def analyze_paper_content(self, text: str) -> Tuple[str, int]:
+        """Analyze paper content with LLM, chunking if needed."""
+        print(f"📊 Analyzing paper content ({len(text):,} characters)...")
         
-        # Look for equations, algorithms, and technical terms
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-                
-            # Look for equations (contains mathematical symbols)
-            if any(symbol in line for symbol in ['=', '∑', '∫', '∂', '∇', '±', '≤', '≥', '→', '∈']):
-                key_info.append(f"EQUATION: {line}")
-            
-            # Look for algorithm steps (numbered or bulleted)
-            elif re.match(r'^\d+[\.\)]\s+', line) or re.match(r'^[•\-\*]\s+', line):
-                key_info.append(f"STEP: {line}")
-            
-            # Look for hyperparameters (contains numbers and technical terms)
-            elif any(term in line.lower() for term in ['learning rate', 'batch size', 'epoch', 'layer', 'hidden', 'dropout']):
-                key_info.append(f"PARAMETER: {line}")
-            
-            # Look for dataset mentions
-            elif any(term in line.lower() for term in ['dataset', 'data', 'training set', 'test set', 'validation']):
-                key_info.append(f"DATA: {line}")
-            
-            # Look for evaluation metrics
-            elif any(term in line.lower() for term in ['accuracy', 'precision', 'recall', 'f1', 'score', 'metric', 'performance']):
-                key_info.append(f"METRIC: {line}")
+        # Try full text first
+        token_count = len(self.tokenizer.encode(text))
+        print(f"📈 Token count: {token_count:,}")
         
-        if key_info:
-            return "Key technical information extracted:\n" + "\n".join(key_info[:20])  # Limit to 20 items
-        else:
-            return f"Text summary: {text[:500]}..."  # Fallback to first 500 chars
+        if token_count <= 15000:  # Try full text first
+            print("🔄 Attempting full text analysis...")
+            analysis, error = await self.call_llm(text, is_chunk=False)
+            
+            if error != "TOKEN_LIMIT_EXCEEDED" and analysis:
+                print("✅ Full text analysis successful!")
+                return analysis, 1
+            else:
+                print(f"⚠️  Full text failed: {error}")
+        
+        # Chunk the text
+        print("🔧 Chunking text for analysis...")
+        chunks = self.chunk_text(text, max_tokens=3000)
+        print(f"📦 Created {len(chunks)} chunks")
+        
+        chunk_analyses = []
+        
+        for i, chunk in enumerate(chunks):
+            print(f"🔍 Analyzing chunk {i+1}/{len(chunks)}...")
+            
+            analysis, error = await self.call_llm(chunk, is_chunk=True)
+            
+            if analysis:
+                chunk_analyses.append(f"=== Chunk {i+1} Analysis ===\n{analysis}")
+                print(f"✅ Chunk {i+1} analyzed successfully")
+            else:
+                print(f"❌ Chunk {i+1} failed: {error}")
+                chunk_analyses.append(f"=== Chunk {i+1} Analysis ===\nAnalysis failed: {error}")
+            
+            # 23 second delay between chunks
+            if i < len(chunks) - 1:
+                print(f"⏳ Waiting {self.config.chunk_delay} seconds before next chunk...")
+                await asyncio.sleep(self.config.chunk_delay)
+        
+        # Combine all chunk analyses
+        combined_analysis = "\n\n".join(chunk_analyses)
+        print(f"📊 Chunking complete: {len(chunk_analyses)} chunks processed")
+        
+        return combined_analysis, len(chunks)
     
-    def consolidate_analyses(self, chunk_analyses: List[Dict[str, Any]], title: str = "", abstract: str = "") -> ExtractedPaperContent:
-        """Consolidate analyses from all chunks into final result."""
-        self.logger.info("Consolidating analyses from all chunks")
-        
-        consolidated = ExtractedPaperContent(title=title, abstract=abstract)
-        
-        # Combine all analysis text into a comprehensive summary
-        all_analyses = []
-        successful_chunks = 0
-        failed_chunks = 0
-        
-        for analysis in chunk_analyses:
-            if "error" in analysis:
-                failed_chunks += 1
-                continue
-            
-            successful_chunks += 1
-            if "analysis" in analysis:
-                section_header = f"\n=== {analysis.get('section', 'Unknown Section')} ===\n"
-                all_analyses.append(section_header + analysis["analysis"])
-        
-        # Store the combined analysis as implementation notes
-        if all_analyses:
-            consolidated.implementation_notes = all_analyses
-            consolidated.experimental_setup = "\n\n".join(all_analyses)
-        
-        # Processing stats
-        consolidated.processing_stats = {
-            "total_chunks_processed": len(chunk_analyses),
-            "successful_analyses": successful_chunks,
-            "failed_analyses": failed_chunks,
-            "extraction_method": "simplified_text_analysis"
-        }
-        
-        return consolidated
-    
-    async def fetch_papers_from_arxiv(self, domains: List[str] = None, max_papers: int = None) -> List[Dict[str, Any]]:
-        """Fetch recent papers from ArXiv API for specified domains."""
-        if domains is None:
-            domains = self.config.target_domains
-        if max_papers is None:
-            max_papers = self.config.max_papers_per_query
-        
-        self.logger.info(f"Fetching papers from ArXiv for domains: {domains}")
-        
-        # Calculate date range
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=self.config.days_back)
-        
-        papers = []
-        
-        for domain in domains:
-            try:
-                # Create ArXiv search query
-                search = arxiv.Search(
-                    query=f"cat:{domain}",
-                    max_results=max_papers // len(domains),
-                    sort_by=arxiv.SortCriterion.SubmittedDate,
-                    sort_order=arxiv.SortOrder.Descending
-                )
-                
-                self.logger.info(f"Searching ArXiv for domain: {domain}")
-                
-                for paper in search.results():
-                    # Filter by date
-                    if paper.published.replace(tzinfo=None) < start_date:
-                        continue
-                    
-                    paper_info = {
-                        "id": paper.entry_id.split('/')[-1],
-                        "title": paper.title,
-                        "abstract": paper.summary,
-                        "authors": [str(author) for author in paper.authors],
-                        "published": paper.published.isoformat(),
-                        "pdf_url": paper.pdf_url,
-                        "domain": domain,
-                        "categories": paper.categories
-                    }
-                    papers.append(paper_info)
-                    
-                    if len(papers) >= max_papers:
-                        break
-                
-                # Rate limiting for ArXiv API
-                await asyncio.sleep(3)  # ArXiv recommends 3 second delays
-                
-            except Exception as e:
-                self.logger.error(f"Failed to fetch papers for domain {domain}: {e}")
-                continue
-        
-        self.logger.info(f"Fetched {len(papers)} papers from ArXiv")
-        return papers
-    
-    async def download_pdf(self, paper_info: Dict[str, Any]) -> Optional[Path]:
-        """Download PDF from ArXiv."""
-        pdf_url = paper_info["pdf_url"]
-        paper_id = paper_info["id"]
-        
-        # Create safe filename
-        safe_title = re.sub(r'[^\w\s-]', '', paper_info["title"])
-        safe_title = re.sub(r'[-\s]+', '_', safe_title)[:100]  # Limit length
-        filename = f"{paper_id}_{safe_title}.pdf"
-        
-        pdf_path = self.config.pdf_output_dir / filename
-        
-        # Skip if already exists
-        if pdf_path.exists():
-            self.logger.info(f"PDF already exists: {filename}")
-            return pdf_path
-        
-        try:
-            self.logger.info(f"Downloading PDF: {filename}")
-            
-            # Create output directory
-            self.config.pdf_output_dir.mkdir(exist_ok=True)
-            
-            # Download with requests (simpler than aiohttp for file downloads)
-            import requests
-            response = requests.get(pdf_url, timeout=60)
-            response.raise_for_status()
-            
-            # Save PDF
-            with open(pdf_path, 'wb') as f:
-                f.write(response.content)
-            
-            self.logger.info(f"Successfully downloaded: {filename}")
-            return pdf_path
-            
-        except Exception as e:
-            self.logger.error(f"Failed to download PDF {filename}: {e}")
-            return None
-    
-    async def check_paper_relevance(self, paper_info: Dict[str, Any], full_text: str = None) -> Tuple[bool, float, str]:
-        """Check if paper is relevant using keyword matching (fallback when no credits)."""
-        # Simple keyword-based relevance check to avoid API calls
-        title = paper_info["title"].lower()
-        abstract = paper_info["abstract"].lower()
-        categories = " ".join(paper_info.get("categories", [])).lower()
-        
-        content = f"{title} {abstract} {categories}"
+    def calculate_relevance_score(self, title: str, abstract: str, categories: List[str]) -> Tuple[float, str]:
+        """Calculate relevance score based on keywords and domains."""
+        content = f"{title.lower()} {abstract.lower()} {' '.join(categories).lower()}"
         
         # Count keyword matches
         keyword_matches = 0
@@ -782,403 +383,396 @@ Keep the response concise and technical."""
                 keyword_matches += 1
                 matched_keywords.append(keyword)
         
-        # Calculate relevance score based on keyword matches
-        relevance_score = min(keyword_matches / len(self.config.relevance_keywords), 1.0)
+        # Calculate score
+        keyword_score = min(keyword_matches / len(self.config.relevance_keywords), 1.0)
         
-        # Consider relevant if score is above threshold or has key ML/AI terms
-        is_relevant = (relevance_score >= self.config.relevance_threshold or 
-                      any(term in content for term in ["neural", "learning", "algorithm", "model", "ai", "ml"]))
+        # Bonus for AI/ML terms
+        ai_terms = ["neural", "learning", "algorithm", "model", "ai", "ml", "deep", "transformer"]
+        ai_matches = sum(1 for term in ai_terms if term in content)
+        ai_bonus = min(ai_matches * 0.1, 0.3)
         
-        reasoning = f"Keyword-based analysis: {keyword_matches}/{len(self.config.relevance_keywords)} keywords matched: {matched_keywords}"
+        final_score = min(keyword_score + ai_bonus, 1.0)
         
-        return is_relevant, relevance_score, reasoning
-
-        content, error = await self._call_llm(user_prompt, system_prompt)
+        reasoning = f"Keywords matched: {matched_keywords} ({keyword_matches}/{len(self.config.relevance_keywords)}), AI terms: {ai_matches}, Final score: {final_score:.2f}"
         
-        if error:
-            self.logger.warning(f"Relevance check failed: {error}")
-            return True, 0.5, "Failed to check relevance, assuming relevant"
-        
-        try:
-            analysis = json.loads(content)
-            is_relevant = analysis.get("relevant", False)
-            score = analysis.get("relevance_score", 0.0)
-            reasoning = analysis.get("reasoning", "No reasoning provided")
-            
-            # Apply threshold
-            is_relevant = is_relevant and score >= self.config.relevance_threshold
-            
-            return is_relevant, score, reasoning
-            
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to parse relevance analysis: {e}")
-            return True, 0.5, "Failed to parse relevance analysis"
+        return final_score, reasoning
     
-    async def process_arxiv_papers(self, domains: List[str] = None, max_papers: int = None) -> Dict[str, Any]:
-        """Complete pipeline: fetch, download, extract, and filter papers from ArXiv."""
-        self.logger.info("Starting complete ArXiv paper processing pipeline")
+    async def download_pdf(self, url: str, filename: str) -> Path:
+        """Download PDF from URL."""
+        pdf_path = self.pdf_dir / filename
         
-        # Create output directories
-        self.config.pdf_output_dir.mkdir(exist_ok=True)
-        self.config.json_output_dir.mkdir(exist_ok=True)
+        if pdf_path.exists():
+            print(f"📄 PDF already exists: {filename}")
+            return pdf_path
         
-        # Step 1: Fetch papers from ArXiv
-        papers = await self.fetch_papers_from_arxiv(domains, max_papers)
+        print(f"⬇️  Downloading PDF: {filename}")
         
-        if not papers:
-            self.logger.warning("No papers fetched from ArXiv")
-            return {"processed": 0, "relevant": 0, "downloaded": 0}
+        async with self.session.get(url) as response:
+            if response.status == 200:
+                with open(pdf_path, 'wb') as f:
+                    async for chunk in response.content.iter_chunked(8192):
+                        f.write(chunk)
+                print(f"✅ Downloaded: {filename}")
+                return pdf_path
+            else:
+                raise Exception(f"Failed to download PDF: HTTP {response.status}")
+    
+    async def fetch_papers_from_arxiv(self, domain: str, max_papers: int = 10) -> List[Dict[str, Any]]:
+        """Fetch papers from ArXiv for a specific domain."""
+        print(f"🔍 Searching ArXiv domain: {domain}")
         
-        # Processing stats
-        stats = {
-            "total_fetched": len(papers),
-            "downloaded": 0,
-            "processed": 0,
-            "relevant": 0,
-            "failed": 0,
-            "relevant_papers": []
-        }
+        # Calculate date range
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=self.config.days_back)
         
-        # Step 2: Process each paper
-        with tqdm(total=len(papers), desc="Processing papers") as pbar:
-            for paper_info in papers:
-                try:
-                    pbar.set_description(f"Processing: {paper_info['title'][:50]}...")
-                    
-                    # Step 2a: Download PDF
-                    pdf_path = await self.download_pdf(paper_info)
-                    if not pdf_path:
-                        stats["failed"] += 1
-                        pbar.update(1)
-                        continue
-                    
-                    stats["downloaded"] += 1
-                    
-                    # Step 2b: Extract text from PDF
-                    try:
-                        full_text, extraction_stats = self.extract_text_from_pdf(pdf_path)
-                    except Exception as e:
-                        self.logger.error(f"Failed to extract text from {pdf_path}: {e}")
-                        stats["failed"] += 1
-                        pbar.update(1)
-                        continue
-                    
-                    # Step 2c: Check relevance
-                    is_relevant, relevance_score, reasoning = await self.check_paper_relevance(
-                        paper_info, full_text
-                    )
-                    
-                    self.logger.info(f"Paper '{paper_info['title'][:50]}...' - Relevant: {is_relevant} (Score: {relevance_score:.2f})")
-                    
-                    if is_relevant:
-                        # Step 2d: Full content extraction and analysis
-                        chunks = self.create_text_chunks(full_text)
-                        chunk_analyses = []
-                        
-                        for chunk in chunks:
-                            analysis = await self.analyze_chunk(chunk)
-                            chunk_analyses.append(analysis)
-                        
-                        # Consolidate results
-                        extracted_content = self.consolidate_analyses(chunk_analyses, paper_info["title"], paper_info["abstract"])
-                        
-                        # Add paper metadata
-                        extracted_content.title = paper_info["title"]
-                        extracted_content.abstract = paper_info["abstract"]
-                        extracted_content.authors = paper_info["authors"]
-                        extracted_content.publication_info = {
-                            "arxiv_id": paper_info["id"],
-                            "published": paper_info["published"],
-                            "categories": paper_info.get("categories", []),
-                            "pdf_url": paper_info["pdf_url"]
-                        }
-                        extracted_content.full_text = full_text
-                        extracted_content.processing_stats.update(extraction_stats)
-                        extracted_content.processing_stats["relevance_score"] = relevance_score
-                        extracted_content.processing_stats["relevance_reasoning"] = reasoning
-                        
-                        # Save to JSON
-                        clean_title = re.sub(r'[^\w\s-]', '', paper_info['title'])[:50]
-                        json_filename = f"{paper_info['id']}_{clean_title}.json"
-                        json_filename = re.sub(r'[-\s]+', '_', json_filename)
-                        json_path = self.config.json_output_dir / json_filename
-                        
-                        with open(json_path, 'w', encoding='utf-8') as f:
-                            json.dump(asdict(extracted_content), f, indent=2, ensure_ascii=False, default=str)
-                        
-                        stats["relevant"] += 1
-                        stats["relevant_papers"].append({
-                            "title": paper_info["title"],
-                            "arxiv_id": paper_info["id"],
-                            "relevance_score": relevance_score,
-                            "json_file": str(json_path),
-                            "pdf_file": str(pdf_path)
-                        })
-                        
-                        self.logger.info(f"✅ Saved relevant paper: {json_filename}")
-                    else:
-                        self.logger.info(f"⏭️  Skipped irrelevant paper: {paper_info['title'][:50]}...")
-                        # Optionally remove downloaded PDF if not relevant
-                        if pdf_path and pdf_path.exists():
-                            pdf_path.unlink()
-                    
-                    stats["processed"] += 1
-                    
-                except Exception as e:
-                    self.logger.error(f"Failed to process paper {paper_info['title']}: {e}")
-                    stats["failed"] += 1
-                
-                pbar.update(1)
-                
-                # Rate limiting between papers
-                await asyncio.sleep(2)
+        search = arxiv.Search(
+            query=f"cat:{domain}",
+            max_results=max_papers,
+            sort_by=arxiv.SortCriterion.SubmittedDate,
+            sort_order=arxiv.SortOrder.Descending
+        )
         
-        # Save processing report
-        report_path = Path(f"arxiv_processing_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-        with open(report_path, 'w') as f:
-            json.dump(stats, f, indent=2, default=str)
+        papers = []
+        for paper in search.results():
+            # Filter by date
+            if paper.published.replace(tzinfo=None) < start_date:
+                continue
+            
+            paper_info = {
+                "id": paper.entry_id.split('/')[-1],
+                "title": paper.title,
+                "abstract": paper.summary,
+                "authors": [str(author) for author in paper.authors],
+                "published": paper.published.isoformat(),
+                "categories": [str(cat) for cat in paper.categories],
+                "pdf_url": paper.pdf_url
+            }
+            papers.append(paper_info)
         
-        self.logger.info(f"📊 Processing complete! Report saved to: {report_path}")
-        self.logger.info(f"📈 Stats: {stats['relevant']}/{stats['processed']} relevant papers found")
+        print(f"📚 Found {len(papers)} papers from {domain}")
+        return papers 
+   
+    async def process_single_paper(self, paper_info: Dict[str, Any]) -> Optional[ExtractedPaperContent]:
+        """Process a single paper completely."""
+        title = paper_info["title"]
         
-        return stats
-
-    async def extract_from_pdf(self, pdf_path: Union[str, Path]) -> ExtractedPaperContent:
-        """Main method to extract content from PDF."""
-        pdf_path = Path(pdf_path)
-        self.logger.info(f"Starting advanced extraction from: {pdf_path}")
+        # Check if already seen
+        if title in self.seen_titles:
+            print(f"⏭️  Skipping seen paper: {title[:60]}...")
+            return None
         
-        # Check for existing progress
-        progress_file = pdf_path.parent / f"{pdf_path.stem}_progress.json"
-        if self.config.resume_on_failure and progress_file.exists():
-            self.logger.info("Found existing progress, attempting to resume...")
-            try:
-                with open(progress_file, 'r') as f:
-                    progress = json.load(f)
-                # TODO: Implement resume logic
-            except Exception as e:
-                self.logger.warning(f"Failed to load progress: {e}")
+        print(f"\n🔬 Processing paper: {title[:60]}...")
+        start_time = time.time()
         
         try:
-            # Step 1: Extract text from PDF
+            # Step 1: Calculate relevance
+            relevance_score, relevance_reasoning = self.calculate_relevance_score(
+                title, paper_info["abstract"], paper_info["categories"]
+            )
+            
+            print(f"📊 Relevance score: {relevance_score:.2f}")
+            
+            if relevance_score < self.config.relevance_threshold:
+                print(f"❌ Paper not relevant (score: {relevance_score:.2f} < {self.config.relevance_threshold})")
+                return None
+            
+            print(f"✅ Paper is relevant! Processing...")
+            
+            # Step 2: Download PDF
+            pdf_filename = f"{paper_info['id']}.pdf"
+            pdf_path = await self.download_pdf(paper_info["pdf_url"], pdf_filename)
+            
+            # Step 3: Extract text from PDF
+            print("📄 Extracting text from PDF...")
             full_text, extraction_stats = self.extract_text_from_pdf(pdf_path)
+            print(f"✅ Extracted {extraction_stats['chars']:,} characters using {extraction_stats['method']}")
             
-            # Step 2: Create text chunks
-            chunks = self.create_text_chunks(full_text)
+            # Save raw text
+            text_filename = f"{paper_info['id']}.txt"
+            text_path = self.text_dir / text_filename
+            with open(text_path, 'w', encoding='utf-8') as f:
+                f.write(full_text)
             
-            # Step 3: Analyze chunks with progress bar
-            chunk_analyses = []
+            # Step 4: Analyze with LLM
+            llm_analysis, chunks_processed = await self.analyze_paper_content(full_text)
             
-            with tqdm(total=len(chunks), desc="Analyzing chunks") as pbar:
-                for chunk in chunks:
-                    analysis = await self.analyze_chunk(chunk)
-                    chunk_analyses.append(analysis)
-                    chunk.processed = True
-                    chunk.analysis_result = analysis
-                    pbar.update(1)
-                    
-                    # Save intermediate progress
-                    if self.config.save_intermediate:
-                        progress_data = {
-                            "processed_chunks": len([c for c in chunks if c.processed]),
-                            "total_chunks": len(chunks),
-                            "last_processed": chunk.chunk_id,
-                            "timestamp": datetime.now().isoformat()
-                        }
-                        with open(progress_file, 'w') as f:
-                            json.dump(progress_data, f, indent=2)
+            # Step 5: Create extracted content
+            extracted_content = ExtractedPaperContent(
+                title=title,
+                abstract=paper_info["abstract"],
+                authors=paper_info["authors"],
+                arxiv_id=paper_info["id"],
+                pdf_url=paper_info["pdf_url"],
+                categories=paper_info["categories"],
+                published=paper_info["published"],
+                full_text=full_text,
+                llm_analysis=llm_analysis,
+                relevance_score=relevance_score,
+                relevance_reasoning=relevance_reasoning,
+                extraction_method=extraction_stats["method"],
+                processing_time=time.time() - start_time,
+                chunks_processed=chunks_processed,
+                token_count=len(self.tokenizer.encode(full_text))
+            )
             
-            # Step 4: Consolidate results
-            result = self.consolidate_analyses(chunk_analyses, pdf_path.stem, "")
+            # Step 6: Save to JSON
+            json_filename = f"{paper_info['id']}.json"
+            json_path = self.json_dir / json_filename
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(asdict(extracted_content), f, indent=2, ensure_ascii=False)
             
-            # Add basic metadata
-            result.full_text = full_text
-            result.processing_stats.update(extraction_stats)
+            print(f"💾 Saved all artifacts for: {title[:60]}...")
             
-            # Clean up progress file
-            if progress_file.exists():
-                progress_file.unlink()
+            # Add to seen titles
+            self.seen_titles.add(title)
             
-            self.logger.info("Extraction completed successfully!")
-            return result
+            return extracted_content
             
         except Exception as e:
-            self.logger.error(f"Extraction failed: {e}")
-            raise
+            print(f"❌ Failed to process paper: {e}")
+            return None
+    
+    async def process_domain(self, domain: str) -> int:
+        """Process papers from a specific domain."""
+        print(f"\n🎯 Processing domain: {domain}")
+        
+        relevant_papers_found = 0
+        tries = 0
+        
+        while relevant_papers_found == 0 and tries < self.config.max_tries_per_domain:
+            tries += 1
+            print(f"🔄 Domain {domain} - Attempt {tries}/{self.config.max_tries_per_domain}")
+            
+            # Fetch papers
+            papers = await self.fetch_papers_from_arxiv(domain, max_papers=10)
+            
+            if not papers:
+                print(f"⚠️  No papers found for domain {domain}")
+                break
+            
+            # Process each paper
+            for paper_info in papers:
+                result = await self.process_single_paper(paper_info)
+                
+                if result:
+                    relevant_papers_found += 1
+                    self.processed_papers.append(result)
+                    print(f"✅ Found relevant paper #{relevant_papers_found}")
+                    
+                    # If we found at least 1 relevant paper, we can stop
+                    if relevant_papers_found >= self.config.min_relevant_papers:
+                        break
+                
+                # 35 second delay between papers
+                print(f"⏳ Waiting {self.config.paper_delay} seconds before next paper...")
+                await asyncio.sleep(self.config.paper_delay)
+            
+            if relevant_papers_found >= self.config.min_relevant_papers:
+                break
+        
+        print(f"📊 Domain {domain} complete: {relevant_papers_found} relevant papers found")
+        return relevant_papers_found
+    
+    def save_local_seen_titles(self):
+        """Save seen titles to local file."""
+        seen_titles_path = self.run_dir / "seen_titles.txt"
+        with open(seen_titles_path, 'w', encoding='utf-8') as f:
+            for title in sorted(self.seen_titles):
+                f.write(f"{title}\n")
+        print(f"💾 Saved {len(self.seen_titles)} seen titles locally")
+    
+    async def push_artifacts_to_repo(self):
+        """Push all artifacts to WATCHDOG_memory repo."""
+        if not self.config.github_token:
+            print("⚠️  No GitHub token provided, skipping repo push")
+            return
+        
+        print(f"🚀 Pushing artifacts to WATCHDOG_memory repo...")
+        
+        try:
+            # GitHub API headers
+            headers = {
+                "Authorization": f"token {self.config.github_token}",
+                "Accept": "application/vnd.github.v3+json"
+            }
+            
+            # Get all files to upload
+            files_to_upload = []
+            
+            # Collect all files from run directory
+            for file_path in self.run_dir.rglob("*"):
+                if file_path.is_file():
+                    relative_path = file_path.relative_to(Path("."))
+                    files_to_upload.append((str(relative_path), file_path))
+            
+            print(f"📁 Found {len(files_to_upload)} files to upload")
+            
+            # Upload each file
+            for relative_path, file_path in files_to_upload:
+                try:
+                    # Read file content
+                    if file_path.suffix.lower() == '.pdf':
+                        with open(file_path, 'rb') as f:
+                            content = base64.b64encode(f.read()).decode()
+                    else:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = base64.b64encode(f.read().encode()).decode()
+                    
+                    # GitHub API URL
+                    api_url = f"https://api.github.com/repos/{self.config.github_username}/{self.config.watchdog_repo_name}/contents/{relative_path}"
+                    
+                    # Create/update file
+                    payload = {
+                        "message": f"Add artifact: {relative_path}",
+                        "content": content,
+                        "branch": "main"
+                    }
+                    
+                    async with self.session.put(api_url, headers=headers, json=payload) as response:
+                        if response.status in [200, 201]:
+                            print(f"✅ Uploaded: {relative_path}")
+                        else:
+                            print(f"❌ Failed to upload {relative_path}: {response.status}")
+                
+                except Exception as e:
+                    print(f"❌ Error uploading {relative_path}: {e}")
+            
+            # Update main seen_titles.txt
+            await self.update_main_seen_titles()
+            
+            print(f"🎉 All artifacts pushed to WATCHDOG_memory repo!")
+            
+        except Exception as e:
+            print(f"❌ Failed to push artifacts: {e}")
+    
+    async def update_main_seen_titles(self):
+        """Update the main seen_titles.txt in repo root."""
+        try:
+            # Combine all seen titles
+            all_titles = sorted(self.seen_titles)
+            content = '\n'.join(all_titles) + '\n'
+            encoded_content = base64.b64encode(content.encode()).decode()
+            
+            headers = {
+                "Authorization": f"token {self.config.github_token}",
+                "Accept": "application/vnd.github.v3+json"
+            }
+            
+            # Get current file SHA
+            api_url = f"https://api.github.com/repos/{self.config.github_username}/{self.config.watchdog_repo_name}/contents/seen_titles.txt"
+            
+            sha = None
+            async with self.session.get(api_url, headers=headers) as response:
+                if response.status == 200:
+                    file_info = await response.json()
+                    sha = file_info.get('sha')
+            
+            # Update file
+            payload = {
+                "message": f"Update seen_titles.txt - Added {len(self.processed_papers)} new papers",
+                "content": encoded_content,
+                "branch": "main"
+            }
+            
+            if sha:
+                payload["sha"] = sha
+            
+            async with self.session.put(api_url, headers=headers, json=payload) as response:
+                if response.status in [200, 201]:
+                    print(f"✅ Updated main seen_titles.txt with {len(all_titles)} titles")
+                else:
+                    error_text = await response.text()
+                    print(f"❌ Failed to update seen_titles.txt: {response.status} - {error_text}")
+                    
+        except Exception as e:
+            print(f"❌ Failed to update main seen_titles.txt: {e}")
+    
+    async def run_complete_pipeline(self):
+        """Run the complete paper extraction pipeline."""
+        print("🚀 Starting Complete ArXiv Paper Extraction Pipeline")
+        print("=" * 60)
+        
+        # Step 1: Fetch seen titles from repo
+        self.seen_titles = await self.fetch_seen_titles_from_repo()
+        
+        # Step 2: Process each domain
+        total_relevant_papers = 0
+        
+        for domain in self.config.target_domains:
+            relevant_count = await self.process_domain(domain)
+            total_relevant_papers += relevant_count
+            
+            if total_relevant_papers >= self.config.min_relevant_papers:
+                print(f"✅ Minimum relevant papers ({self.config.min_relevant_papers}) reached!")
+        
+        # Step 3: Save local seen titles
+        self.save_local_seen_titles()
+        
+        # Step 4: Generate summary
+        print(f"\n📊 Pipeline Complete!")
+        print(f"   📄 Total papers processed: {len(self.processed_papers)}")
+        print(f"   ✅ Relevant papers found: {total_relevant_papers}")
+        print(f"   📁 Run directory: {self.run_dir}")
+        print(f"   🕒 Run timestamp: {self.run_timestamp}")
+        
+        # Step 5: Push all artifacts to WATCHDOG_memory repo
+        await self.push_artifacts_to_repo()
+        
+        return {
+            "total_processed": len(self.processed_papers),
+            "relevant_papers": total_relevant_papers,
+            "run_directory": str(self.run_dir),
+            "timestamp": self.run_timestamp
+        }
 
 
 async def main():
-    """Main function for command-line usage - Complete ArXiv Pipeline."""
-    import argparse
-    
-    parser = argparse.ArgumentParser(
-        description="Advanced Paper Content Extractor - Complete ArXiv Pipeline",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Complete ArXiv pipeline (fetch + extract + filter)
-  python advanced_paper_extractor.py --arxiv --domains cs.AI cs.LG --max-papers 10
-  
-  # Extract from existing PDF
-  python advanced_paper_extractor.py paper.pdf --output extracted.json
-  
-  # Fetch papers for specific domains
-  python advanced_paper_extractor.py --arxiv --domains cs.CV cs.CL --days-back 3
-  
-  # Free tier friendly settings
-  python advanced_paper_extractor.py --arxiv --model deepseek/deepseek-r1-0528:free --delay 10
-        """
-    )
-    
-    # Mode selection
-    parser.add_argument("pdf_path", nargs="?", help="Path to PDF file (for single PDF mode)")
-    parser.add_argument("--arxiv", action="store_true", help="Fetch papers from ArXiv (replaces v3.py)")
-    
-    # ArXiv fetching options
-    parser.add_argument("--domains", nargs="+", default=["cs.AI", "cs.LG", "cs.CV", "cs.CL"], 
-                       help="ArXiv domains to search")
-    parser.add_argument("--max-papers", type=int, default=20, help="Maximum papers to fetch")
-    parser.add_argument("--days-back", type=int, default=7, help="Days to look back for papers")
-    parser.add_argument("--keywords", nargs="+", help="Relevance keywords")
-    
-    # Processing options
-    parser.add_argument("--output", "-o", help="Output JSON file", default="extracted_content.json")
-    parser.add_argument("--model", help="OpenRouter model", default="deepseek/deepseek-r1-0528:free")
-    parser.add_argument("--delay", type=float, default=8.0, help="Delay between requests (seconds)")
-    parser.add_argument("--threshold", type=float, default=0.7, help="Relevance threshold (0-1)")
-    
-    # Control options
-    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    parser.add_argument("--no-cache", action="store_true", help="Disable caching")
-    parser.add_argument("--no-filter", action="store_true", help="Disable relevance filtering")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be processed")
-    
-    args = parser.parse_args()
-    
-    # Load environment
+    """Main function."""
     load_dotenv()
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
+    
+    print("🚀 Advanced Paper Content Extractor - WATCHDOG_memory Integration")
+    print("=" * 70)
+    
+    # Get required environment variables
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    github_token = os.getenv("GITHUB_TOKEN", "")
+    
+    if not openrouter_key:
         print("❌ Error: OPENROUTER_API_KEY environment variable not set")
-        print("Please set your OpenRouter API key in .env file:")
-        print("OPENROUTER_API_KEY=your_key_here")
         return 1
     
-    # Create config
+    # Create configuration
     config = ExtractionConfig(
-        openrouter_api_key=api_key,
-        model=args.model,
-        delay_between_requests=args.delay,
-        relevance_threshold=args.threshold,
-        verbose=args.verbose,
-        enable_caching=not args.no_cache,
-        enable_relevance_filtering=not args.no_filter,
-        target_domains=args.domains,
-        max_papers_per_query=args.max_papers,
-        days_back=args.days_back
+        openrouter_api_key=openrouter_key,
+        github_token=github_token,
+        verbose=True
     )
     
-    if args.keywords:
-        config.relevance_keywords = args.keywords
-    
-    print("🚀 Advanced Paper Content Extractor")
-    print("=" * 50)
-    
-    if args.dry_run:
-        print("🔍 DRY RUN MODE - No files will be created")
-    
     print(f"📋 Configuration:")
-    print(f"   Model: {config.model}")
-    print(f"   Rate limit: {config.requests_per_minute} req/min")
-    print(f"   Delay: {config.delay_between_requests}s")
-    print(f"   Relevance threshold: {config.relevance_threshold}")
-    print(f"   Caching: {config.enable_caching}")
-    print(f"   Filtering: {config.enable_relevance_filtering}")
+    print(f"   🤖 Model: {config.model} (FREE)")
+    print(f"   ⏱️  Chunk delay: {config.chunk_delay}s")
+    print(f"   ⏱️  Paper delay: {config.paper_delay}s")
+    print(f"   🎯 Min relevant papers: {config.min_relevant_papers}")
+    print(f"   🔄 Max tries per domain: {config.max_tries_per_domain}")
+    print(f"   📚 Domains: {', '.join(config.target_domains)}")
+    print(f"   🔑 Keywords: {', '.join(config.relevance_keywords[:5])}...")
+    print(f"   🔗 WATCHDOG_memory: {'✅' if github_token else '❌'}")
+    print()
     
-    async with AdvancedPaperExtractor(config) as extractor:
-        try:
-            if args.arxiv:
-                # Complete ArXiv pipeline (replaces v3.py)
-                print(f"\n📚 ArXiv Pipeline Mode")
-                print(f"   Domains: {', '.join(config.target_domains)}")
-                print(f"   Max papers: {config.max_papers_per_query}")
-                print(f"   Days back: {config.days_back}")
-                print(f"   Keywords: {', '.join(config.relevance_keywords[:5])}...")
-                
-                if args.dry_run:
-                    # Just fetch and show what would be processed
-                    papers = await extractor.fetch_papers_from_arxiv()
-                    print(f"\n🔍 Would process {len(papers)} papers:")
-                    for i, paper in enumerate(papers[:10]):
-                        print(f"   {i+1}. {paper['title'][:60]}...")
-                    if len(papers) > 10:
-                        print(f"   ... and {len(papers) - 10} more")
-                    return 0
-                
-                # Run complete pipeline
-                stats = await extractor.process_arxiv_papers()
-                
-                print(f"\n🎉 ArXiv Pipeline Complete!")
-                print(f"📊 Final Statistics:")
-                print(f"   📄 Papers fetched: {stats['total_fetched']}")
-                print(f"   ⬇️  PDFs downloaded: {stats['downloaded']}")
-                print(f"   🔬 Papers processed: {stats['processed']}")
-                print(f"   ✅ Relevant papers: {stats['relevant']}")
-                print(f"   ❌ Failed: {stats['failed']}")
-                
-                if stats['relevant'] > 0:
-                    success_rate = (stats['relevant'] / stats['processed']) * 100
-                    print(f"   📈 Success rate: {success_rate:.1f}%")
-                    
-                    print(f"\n✅ Relevant Papers Saved:")
-                    for paper in stats['relevant_papers']:
-                        print(f"   • {paper['title'][:60]}... (Score: {paper['relevance_score']:.2f})")
-                        print(f"     JSON: {paper['json_file']}")
-                
-            elif args.pdf_path:
-                # Single PDF mode
-                print(f"\n📄 Single PDF Mode")
-                print(f"   Input: {args.pdf_path}")
-                print(f"   Output: {args.output}")
-                
-                if args.dry_run:
-                    print(f"🔍 Would extract content from: {args.pdf_path}")
-                    return 0
-                
-                result = await extractor.extract_from_pdf(args.pdf_path)
-                
-                # Save result
-                output_path = Path(args.output)
-                with open(output_path, 'w', encoding='utf-8') as f:
-                    json.dump(asdict(result), f, indent=2, ensure_ascii=False)
-                
-                print(f"\n✅ Extraction completed!")
-                print(f"📄 Output: {output_path}")
-                print(f"🔍 Content summary:")
-                print(f"   Mathematical formulations: {len(result.mathematical_formulations)}")
-                print(f"   Algorithms: {len(result.algorithms)}")
-                print(f"   Hyperparameters: {len(result.hyperparameters)}")
-                print(f"   Datasets: {len(result.datasets_used)}")
-                print(f"   Evaluation metrics: {len(result.evaluation_metrics)}")
-                
-            else:
-                print("❌ Error: Must specify either --arxiv or provide a PDF path")
-                print("Use --help for usage examples")
-                return 1
-                
-        except KeyboardInterrupt:
-            print("\n⏹️  Process interrupted by user")
+    try:
+        async with AdvancedPaperExtractor(config) as extractor:
+            results = await extractor.run_complete_pipeline()
+            
+            print(f"\n🎉 All Done!")
+            print(f"📊 Results: {results}")
             return 0
-        except Exception as e:
-            print(f"\n❌ Process failed: {e}")
-            if args.verbose:
-                import traceback
-                traceback.print_exc()
-            return 1
-    
-    return 0
+            
+    except Exception as e:
+        print(f"❌ Pipeline failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
 
 
 if __name__ == "__main__":
-    import sys
-    sys.exit(asyncio.run(main()))
+    exit(asyncio.run(main()))
