@@ -48,10 +48,10 @@ class Config:
     create_individual_repos: bool = True  # Create individual repos for each paper
     
     # Advanced LLM Models
-    architect_model: str = "tngtech/deepseek-r1t2-chimera:free"
-    coder_model: str = "deepseek/deepseek-chat-v3-0324:free"
-    reviewer_model: str = "deepseek/deepseek-r1-0528:free"
-    documentation_model: str = "deepseek/deepseek-chat-v3-0324:free"
+    architect_model: str = "anthropic/claude-3.5-sonnet"
+    coder_model: str = "deepseek/deepseek-coder-v2-instruct"
+    reviewer_model: str = "meta-llama/llama-3.1-405b-instruct"
+    documentation_model: str = "openai/gpt-4o"
     
     # LLM Parameters
     temperature: float = 0.2
@@ -4675,7 +4675,7 @@ async def main():
         
         # Initialize the main agent
         async with aiohttp.ClientSession() as session:
-            agent = M1EvoMaintainerAgent(config, session, logger)
+            agent = M1EvoMaintainerAgent(config)
             
             # Process papers and create repositories
             await agent.process_all_papers()
