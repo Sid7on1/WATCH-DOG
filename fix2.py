@@ -4678,7 +4678,7 @@ async def main():
             agent = M1EvoMaintainerAgent(config)
             
             # Process papers and create repositories
-            await agent.process_all_papers()
+            await agent.run()
             
         logger.info("M1-Evo Maintainer Agent execution completed successfully")
         
