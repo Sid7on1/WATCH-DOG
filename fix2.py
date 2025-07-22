@@ -3318,6 +3318,18 @@ class M1EvoMaintainerAgent:
             llm_interface = LLMInterface(self.config, session, self.logger)
             github_manager = GitHubManager(self.config, session, self.logger)
             
+            # Test LLM connectivity
+            self.logger.info("Testing LLM connectivity...")
+            try:
+                test_messages = [{"role": "user", "content": "Hello, please respond with 'OK' if you can hear me."}]
+                test_response, test_error = await llm_interface._call_llm(test_messages, self.config.architect_model)
+                if test_response:
+                    self.logger.info(f"LLM connectivity test successful: {test_response[:50]}...")
+                else:
+                    self.logger.error(f"LLM connectivity test failed: {test_error}")
+            except Exception as e:
+                self.logger.error(f"LLM connectivity test exception: {e}")
+            
             # Load papers and state
             papers = self.paper_processor.load_papers_from_directory()
             state = self.state_manager.load_state()
@@ -3371,11 +3383,17 @@ class M1EvoMaintainerAgent:
                 return True
             
             # Update status to planning
-            self.state_manager.update_repo_state(state, repo_name, ProcessingStatus.PLANNING)
+            self.state_manager.update_repo_state(state, repo_name, ProcessingStatus.PLANNING_ARCHITECTURE)
             
             # Step 1: Plan file structure
             self.logger.info(f"Planning file structure for {repo_name}")
-            file_plans, plan_message = await llm_interface.plan_file_structure(paper)
+            try:
+                file_plans, plan_message = await llm_interface.plan_file_structure(paper)
+            except Exception as planning_error:
+                error_msg = f"Exception during file structure planning: {planning_error}"
+                self.logger.error(error_msg)
+                self.state_manager.update_repo_state(state, repo_name, ProcessingStatus.FAILED, error_msg)
+                return False
             
             if not file_plans:
                 error_msg = f"Failed to generate file plan: {plan_message}"
