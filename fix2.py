@@ -48,10 +48,10 @@ class Config:
     create_individual_repos: bool = True  # Create individual repos for each paper
     
     # Advanced LLM Models
-    architect_model: str = "anthropic/claude-3.5-sonnet"
-    coder_model: str = "deepseek/deepseek-coder-v2-instruct"
-    reviewer_model: str = "meta-llama/llama-3.1-405b-instruct"
-    documentation_model: str = "openai/gpt-4o"
+    architect_model: str = "deepseek/deepseek-chat-v3-0324:free"
+    coder_model: str = "moonshotai/kimi-k2:free"
+    reviewer_model: str = "moonshotai/kimi-k2:free"
+    documentation_model: str = "qwen/qwen3-235b-a22b-07-25:free"
     
     # LLM Parameters
     temperature: float = 0.2
