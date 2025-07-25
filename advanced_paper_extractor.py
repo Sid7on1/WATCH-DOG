@@ -30,7 +30,7 @@ class ExtractionConfig:
     """Configuration for complete paper extraction and WATCHDOG_memory integration."""
     # OpenRouter API settings
     openrouter_api_key: str
-    model: str = "deepseek/deepseek-chat-v3-0324:free"  # FREE model, not cheaper
+    model: str = "meta-llama/llama-3.2-3b-instruct:free"  # FREE model, not cheaper
     temperature: float = 0.1
     max_tokens: int = 4000  # Higher for free model
     
@@ -192,28 +192,32 @@ class AdvancedPaperExtractor:
         stats = {"method": None, "pages": 0, "chars": 0, "time": 0}
         start_time = time.time()
         
-        # Method 1: PyMuPDF
+        # Method 1: PyMuPDF (with proper resource management)
         try:
             doc = fitz.open(pdf_path)
             text_parts = []
+            page_count = len(doc)  # Store page count before processing
             
-            for page_num in range(len(doc)):
-                page = doc.load_page(page_num)
-                text = page.get_text()
-                if text.strip():
-                    text_parts.append(f"--- Page {page_num + 1} ---\n{text}\n")
-            
-            doc.close()
-            
-            if text_parts:
-                full_text = "\n".join(text_parts)
-                stats.update({
-                    "method": "PyMuPDF",
-                    "pages": len(doc),
-                    "chars": len(full_text),
-                    "time": time.time() - start_time
-                })
-                return full_text, stats
+            try:
+                for page_num in range(page_count):
+                    page = doc.load_page(page_num)
+                    text = page.get_text()
+                    if text.strip():
+                        text_parts.append(f"--- Page {page_num + 1} ---\n{text}\n")
+                
+                if text_parts:
+                    full_text = "\n".join(text_parts)
+                    stats.update({
+                        "method": "PyMuPDF",
+                        "pages": page_count,
+                        "chars": len(full_text),
+                        "time": time.time() - start_time
+                    })
+                    return full_text, stats
+            finally:
+                # Ensure document is always closed
+                doc.close()
+                
         except Exception as e:
             self.logger.warning(f"PyMuPDF failed: {e}")
         
