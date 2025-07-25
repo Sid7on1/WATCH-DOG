@@ -35,6 +35,7 @@ class Config:
     openrouter_api_key: str
     github_token: str
     github_username: str
+    openrouter_api_key_2: str = ""  # Fallback API key (KEY2)
     huggingface_token: str = ""
     arxiv_api_key: str = ""
     
@@ -48,10 +49,10 @@ class Config:
     create_individual_repos: bool = True  # Create individual repos for each paper
     
     # Advanced LLM Models
-    architect_model: str = "deepseek/deepseek-chat-v3-0324:free"
-    coder_model: str = "moonshotai/kimi-k2:free"
-    reviewer_model: str = "moonshotai/kimi-k2:free"
-    documentation_model: str = "qwen/qwen3-235b-a22b-07-25:free"
+    architect_model: str = "anthropic/claude-3.5-sonnet"
+    coder_model: str = "deepseek/deepseek-coder-v2-instruct"
+    reviewer_model: str = "meta-llama/llama-3.1-405b-instruct"
+    documentation_model: str = "openai/gpt-4o"
     
     # LLM Parameters
     temperature: float = 0.2
@@ -268,12 +269,35 @@ class LLMInterface:
         self.config = config
         self.session = session
         self.logger = logger
+        
+        # Primary API key
+        self.current_api_key = self.config.openrouter_api_key
+        self.using_fallback = False
+        
         self.headers = {
-            "Authorization": f"Bearer {self.config.openrouter_api_key}",
+            "Authorization": f"Bearer {self.current_api_key}",
             "Content-Type": "application/json",
             "User-Agent": self.config.user_agent
         }
         self.config.llm_logs_dir.mkdir(exist_ok=True)
+
+    def switch_to_fallback_key(self) -> bool:
+        """Switch to the fallback API key (KEY2) if available."""
+        if self.config.openrouter_api_key_2 and not self.using_fallback:
+            self.logger.warning("🔄 Switching to fallback API key (KEY2)")
+            self.current_api_key = self.config.openrouter_api_key_2
+            self.using_fallback = True
+            self.headers["Authorization"] = f"Bearer {self.current_api_key}"
+            return True
+        return False
+
+    def reset_to_primary_key(self):
+        """Reset to primary API key."""
+        if self.using_fallback:
+            self.logger.info("🔄 Resetting to primary API key")
+            self.current_api_key = self.config.openrouter_api_key
+            self.using_fallback = False
+            self.headers["Authorization"] = f"Bearer {self.current_api_key}"
 
     def redact_sensitive(self, data: Any) -> Any:
         """Redacts sensitive information like API keys from logs."""
@@ -346,14 +370,31 @@ class LLMInterface:
                     if response.status == 401:
                         error_text = await response.text()
                         self.logger.error(f"401 Unauthorized for model {model}. Check API key.")
+                        
+                        # Try fallback API key if available and not already using it
+                        if self.switch_to_fallback_key():
+                            self.logger.info("🔄 Retrying with fallback API key (KEY2)")
+                            if is_github_actions:
+                                print("::warning::Primary API key failed, trying fallback KEY2")
+                            continue  # Retry with fallback key
+                        
                         if is_github_actions:
-                            print("::error::LLM API authentication failed - check OPENROUTER_API_KEY secret")
-                        error_message = f"Authentication failed for LLM API: {error_text}"
+                            print("::error::LLM API authentication failed - check OPENROUTER_API_KEY and KEY2 secrets")
+                        error_message = f"Authentication failed for LLM API (both keys tried): {error_text}"
                         break
                         
                     if response.status == 403:
                         error_text = await response.text()
                         self.logger.error(f"403 Forbidden for model {model}. Model may not be available.")
+                        
+                        # Try fallback API key if available and not already using it (403 can indicate key issues)
+                        if "insufficient" in error_text.lower() or "quota" in error_text.lower() or "credits" in error_text.lower():
+                            if self.switch_to_fallback_key():
+                                self.logger.info("🔄 Retrying with fallback API key (KEY2) due to quota/credits issue")
+                                if is_github_actions:
+                                    print("::warning::Primary API key quota exceeded, trying fallback KEY2")
+                                continue  # Retry with fallback key
+                        
                         error_message = f"Access denied for model {model}: {error_text}"
                         break
                     
@@ -2220,12 +2261,26 @@ class GitHubManager:
     async def create_repository(self, repo_name: str, description: str) -> Tuple[Optional[str], str]:
         """Creates individual repository AND verifies WATCHDOG_memory for dual saving."""
         
-        # Step 1: Create individual repository (always create new repos)
+        # Step 0: Check if repository already exists to avoid 422 errors
+        check_url = f"https://api.github.com/repos/{self.config.github_username}/{repo_name}"
+        try:
+            async with self.session.get(check_url, headers=self.headers) as response:
+                if response.status == 200:
+                    existing_url = f"https://github.com/{self.config.github_username}/{repo_name}"
+                    self.logger.info(f"✅ Repository already exists: {existing_url}")
+                    # Still verify WATCHDOG_memory for dual saving
+                    if self.config.save_to_watchdog:
+                        await self._verify_watchdog_repo()
+                    return existing_url, "✅ Repository already exists (using existing)"
+        except Exception as e:
+            self.logger.debug(f"Error checking repo existence: {e}")
+        
+        # Step 1: Create individual repository with improved 422 handling
         individual_repo_url = None
         url = "https://api.github.com/user/repos"
         payload = {
             "name": repo_name,
-            "description": description,
+            "description": description[:100],  # Limit description length
             "private": self.config.repo_visibility == "private",
             "auto_init": False,
             "has_issues": True,
@@ -2235,6 +2290,8 @@ class GitHubManager:
         
         for attempt in range(self.config.retry_attempts):
             try:
+                self.logger.info(f"Creating repository: {repo_name} (attempt {attempt + 1})")
+                
                 async with self.session.post(url, headers=self.headers, json=payload) as response:
                     if response.status == 201:
                         data = await response.json()
@@ -2243,17 +2300,56 @@ class GitHubManager:
                         break
                     elif response.status == 422:
                         error_data = await response.json()
-                        if "name already exists" in str(error_data):
+                        error_msg = error_data.get("message", "Unknown error")
+                        
+                        # Handle specific 422 errors
+                        if "name already exists" in error_msg.lower():
                             individual_repo_url = f"https://github.com/{self.config.github_username}/{repo_name}"
-                            self.logger.warning(f"⚠️ Individual repository already exists: {individual_repo_url}")
+                            self.logger.warning(f"⚠️ Repository created concurrently: {individual_repo_url}")
                             break
+                        elif "repository creation failed" in error_msg.lower():
+                            # Try with a different name
+                            import random
+                            new_name = f"{repo_name}-{random.randint(1000, 9999)}"
+                            self.logger.info(f"Repository creation failed, trying: {new_name}")
+                            payload["name"] = new_name
+                            repo_name = new_name
+                            continue
+                        else:
+                            # Log detailed error and try fallback name
+                            self.logger.error(f"422 Unprocessable Entity: {error_msg}")
+                            self.logger.error(f"Full error response: {error_data}")
+                            fallback_name = f"research-paper-{int(time.time())}-{random.randint(100, 999)}"
+                            self.logger.info(f"Trying fallback name: {fallback_name}")
+                            payload["name"] = fallback_name
+                            repo_name = fallback_name
+                            continue
                     elif response.status == 429:
                         retry_after = int(response.headers.get("Retry-After", 60))
                         self.logger.warning(f"Rate limit exceeded. Retrying after {retry_after} seconds.")
                         await asyncio.sleep(retry_after)
                         continue
+                    elif response.status == 403:
+                        error_text = await response.text()
+                        self.logger.error(f"403 Forbidden - Check token permissions: {error_text}")
+                        return None, "GitHub token lacks repository creation permissions"
+                    elif response.status == 401:
+                        self.logger.error("401 Unauthorized - Invalid GitHub token")
+                        return None, "Invalid GitHub token"
+                    else:
+                        error_text = await response.text()
+                        self.logger.error(f"Unexpected status {response.status}: {error_text}")
+                        if attempt < self.config.retry_attempts - 1:
+                            await asyncio.sleep(self.config.retry_delay * (attempt + 1))
+                            continue
+                        return None, f"Repository creation failed with status {response.status}"
                     
-                    response.raise_for_status()
+            except asyncio.TimeoutError:
+                self.logger.warning(f"Timeout creating repository (attempt {attempt + 1})")
+                if attempt < self.config.retry_attempts - 1:
+                    await asyncio.sleep(self.config.retry_delay * (attempt + 1))
+                    continue
+                return None, "Repository creation timed out"
             except Exception as e:
                 error_msg = f"Failed to create individual repository (attempt {attempt+1}): {e}"
                 self.logger.error(error_msg)
@@ -2263,17 +2359,7 @@ class GitHubManager:
         # Step 2: Verify WATCHDOG_memory repository (for dual saving)
         watchdog_verified = False
         if self.config.save_to_watchdog:
-            check_url = f"https://api.github.com/repos/{self.config.github_username}/{self.config.watchdog_repo_name}"
-            try:
-                async with self.session.get(check_url, headers=self.headers) as response:
-                    if response.status == 200:
-                        watchdog_url = f"https://github.com/{self.config.github_username}/{self.config.watchdog_repo_name}"
-                        self.logger.info(f"✅ WATCHDOG_memory repository verified for dual saving: {watchdog_url}")
-                        watchdog_verified = True
-                    else:
-                        self.logger.warning(f"⚠️ WATCHDOG_memory repository not accessible: {response.status}")
-            except Exception as e:
-                self.logger.warning(f"WATCHDOG_memory verification failed: {e}")
+            watchdog_verified = await self._verify_watchdog_repo()
         
         # Return results
         if individual_repo_url:
@@ -2283,6 +2369,22 @@ class GitHubManager:
                 return individual_repo_url, f"✅ Individual repository created (WATCHDOG_memory backup disabled)"
         else:
             return None, f"❌ Failed to create individual repository after {self.config.retry_attempts} attempts"
+
+    async def _verify_watchdog_repo(self) -> bool:
+        """Verify WATCHDOG_memory repository exists."""
+        check_url = f"https://api.github.com/repos/{self.config.github_username}/{self.config.watchdog_repo_name}"
+        try:
+            async with self.session.get(check_url, headers=self.headers) as response:
+                if response.status == 200:
+                    watchdog_url = f"https://github.com/{self.config.github_username}/{self.config.watchdog_repo_name}"
+                    self.logger.info(f"✅ WATCHDOG_memory repository verified for dual saving: {watchdog_url}")
+                    return True
+                else:
+                    self.logger.warning(f"⚠️ WATCHDOG_memory repository not accessible: {response.status}")
+                    return False
+        except Exception as e:
+            self.logger.warning(f"WATCHDOG_memory verification failed: {e}")
+            return False
 
     async def upload_file(self, repo_name: str, file_path: str, content: str, commit_message: str) -> Tuple[bool, str]:
         """Uploads file to individual repository AND WATCHDOG_memory (dual saving)."""
@@ -3120,19 +3222,30 @@ class PaperProcessor:
         return ' '.join(setup_lines[:3])
 
     def generate_repo_name(self, paper: PaperInfo) -> str:
-        """Generates a repository name from paper information."""
+        """Generates a unique repository name from paper information."""
         # Clean and format the title
         title_words = re.sub(r'[^\w\s-]', '', paper.title.lower()).split()
         
-        # Take first 4-6 meaningful words
-        meaningful_words = [word for word in title_words if len(word) > 2][:6]
+        # Take first 4 meaningful words (reduced to avoid long names)
+        meaningful_words = [word for word in title_words if len(word) > 2][:4]
         
-        # Create repo name
-        repo_name = self.config.repo_prefix + "_".join(meaningful_words)
+        # Create base name
+        base_name = "_".join(meaningful_words) if meaningful_words else "research_paper"
+        base_name = re.sub(r'[^a-zA-Z0-9_-]', '', base_name)
         
-        # Ensure it's not too long and follows GitHub naming conventions
-        repo_name = re.sub(r'[^a-zA-Z0-9_-]', '', repo_name)[:100]
+        # Add timestamp for uniqueness to avoid 422 conflicts
+        timestamp = str(int(time.time()))[-6:]  # Last 6 digits of timestamp
         
+        # Create final repo name with prefix and timestamp
+        repo_name = f"{self.config.repo_prefix}{base_name}_{timestamp}"
+        
+        # Ensure it's not too long
+        if len(repo_name) > 100:
+            max_base_length = 100 - len(self.config.repo_prefix) - len(timestamp) - 1
+            base_name = base_name[:max_base_length]
+            repo_name = f"{self.config.repo_prefix}{base_name}_{timestamp}"
+        
+        self.logger.info(f"Generated unique repo name: '{paper.title}' -> '{repo_name}'")
         return repo_name
 
 
@@ -3564,6 +3677,7 @@ async def main():
     # Create configuration
     config = Config(
         openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
+        openrouter_api_key_2=os.getenv("KEY2", ""),  # Fallback API key
         github_token=os.getenv("GITHUB_TOKEN", ""),
         github_username=os.getenv("GITHUB_USERNAME", "")
     )
@@ -3572,6 +3686,12 @@ async def main():
     if not config.openrouter_api_key:
         print("Error: OPENROUTER_API_KEY environment variable is required")
         return
+    
+    # Log fallback key status
+    if config.openrouter_api_key_2:
+        print("✅ Fallback API key (KEY2) configured for redundancy")
+    else:
+        print("⚠️  No fallback API key (KEY2) configured - consider adding for redundancy")
     
     if not config.github_token:
         print("Error: GITHUB_TOKEN environment variable is required")
@@ -4645,6 +4765,7 @@ async def main():
         # Initialize configuration with GitHub Actions support
         config = Config(
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
+            openrouter_api_key_2=os.getenv("KEY2", ""),  # Fallback API key
             github_token=os.getenv("GITHUB_TOKEN", os.getenv("GH_TOKEN", "")),  # Support both GITHUB_TOKEN and GH_TOKEN
             github_username=os.getenv("GITHUB_USERNAME", os.getenv("GITHUB_ACTOR", "")),  # Use GITHUB_ACTOR in Actions
             huggingface_token=os.getenv("HUGGINGFACE_TOKEN", ""),
@@ -4730,6 +4851,7 @@ def setup_environment():
     # Create .env template if it doesn't exist
     env_template = """# M1-Evo Maintainer Agent Configuration
 OPENROUTER_API_KEY=your_openrouter_api_key_here
+KEY2=your_fallback_openrouter_api_key_here
 GITHUB_TOKEN=your_github_token_here
 GITHUB_USERNAME=your_github_username_here
 HUGGINGFACE_TOKEN=your_huggingface_token_here
