@@ -49,10 +49,10 @@ class Config:
     create_individual_repos: bool = True  # Create individual repos for each paper
     
     # Advanced LLM Models - Updated for better reliability
-    architect_model: str = "openai/gpt-4o-mini"  # More reliable and faster
-    coder_model: str = "openai/gpt-4o-mini"      # Consistent model for code generation
-    reviewer_model: str = "openai/gpt-4o-mini"   # Same model for consistency
-    documentation_model: str = "openai/gpt-4o-mini"  # Unified model approach
+    architect_model: str = "deepseek/deepseek-chat-v3-0324:free"  # More reliable and faster
+    coder_model: str = "moonshotai/kimi-k2:free"      # Consistent model for code generation
+    reviewer_model: str = "qwen/qwen3-coder:free"   # Same model for consistency
+    documentation_model: str = "google/gemini-2.0-flash-exp:free"  # Unified model approach
     
     # LLM Parameters - Optimized for reliability
     temperature: float = 0.1
