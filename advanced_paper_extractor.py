@@ -30,7 +30,7 @@ class ExtractionConfig:
     """Configuration for complete paper extraction and WATCHDOG_memory integration."""
     # OpenRouter API settings
     openrouter_api_key: str
-    model: str = "meta-llama/llama-3.2-3b-instruct:free"  # FREE model, not cheaper
+    model: str = "google/gemini-2.0-flash-exp:free"  # FREE model, not cheaper
     temperature: float = 0.1
     max_tokens: int = 4000  # Higher for free model
     
