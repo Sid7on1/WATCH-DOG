@@ -153,7 +153,7 @@ jobs:
         "
     
     - name: 📊 Upload Scraping Artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: scraped-papers-${{ github.run_number }}
@@ -184,7 +184,7 @@ jobs:
     
     - name: 📥 Download Scraped Papers
       if: needs.paper-scraping.result == 'success'
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: scraped-papers-${{ github.run_number }}
         path: ./
@@ -253,7 +253,7 @@ jobs:
         "
     
     - name: 📊 Upload Text Extraction Artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: extracted-texts-${{ github.run_number }}
@@ -282,7 +282,7 @@ jobs:
     
     - name: 📥 Download Extracted Texts
       if: needs.text-extraction.result == 'success'
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: extracted-texts-${{ github.run_number }}
         path: ./
@@ -367,7 +367,7 @@ jobs:
         "
     
     - name: 📊 Upload Selection Artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: relevant-papers-${{ github.run_number }}
@@ -396,7 +396,7 @@ jobs:
     
     - name: 📥 Download Relevant Papers
       if: needs.relevance-selection.result == 'success'
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: relevant-papers-${{ github.run_number }}
         path: ./
@@ -483,7 +483,7 @@ jobs:
         "
     
     - name: 📊 Upload Planning Artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: project-plans-${{ github.run_number }}
@@ -512,7 +512,7 @@ jobs:
     
     - name: 📥 Download Project Plans
       if: needs.project-planning.result == 'success'
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: project-plans-${{ github.run_number }}
         path: ./
@@ -597,7 +597,7 @@ jobs:
         "
     
     - name: 📊 Upload Generated Projects
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: generated-projects-${{ github.run_number }}
@@ -626,7 +626,7 @@ jobs:
     
     - name: 📥 Download Generated Projects
       if: needs.code-generation.result == 'success'
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: generated-projects-${{ github.run_number }}
         path: ./
