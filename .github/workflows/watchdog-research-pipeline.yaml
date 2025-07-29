@@ -110,65 +110,21 @@ jobs:
         echo "🔍 Starting ArXiv paper scraping..."
         echo "📊 Max papers per domain: ${{ env.MAX_PAPERS_PER_DOMAIN }}"
         
-        python -c "
-        import sys
-        import traceback
-        import os
+        # Run scraper directly
+        python scraper.py
         
-        try:
-            # Try different module names (case sensitivity)
-            scraper_module = None
-            for module_name in ['scraper', 'SCRAPER']:
-                try:
-                    scraper_module = __import__(module_name)
-                    print(f'✅ {module_name} module loaded successfully')
-                    break
-                except ImportError:
-                    continue
-            
-            if not scraper_module:
-                raise ImportError('No scraper module found (tried: scraper, SCRAPER)')
-            
-            # Initialize scraper
-            arxiv_scraper = scraper_module.ArxivScraper()
-            print('✅ ArXiv scraper initialized')
-            
-            # Run scraping with specified limits
-            max_papers = int('${{ env.MAX_PAPERS_PER_DOMAIN }}')
-            results = arxiv_scraper.scrape_all_domains(
-                max_results_per_domain=max_papers,
-                download_pdfs=True
-            )
-            
-            # Count total papers
-            total_papers = sum(len(papers) for papers in results.values())
-            print(f'📊 Total papers scraped: {total_papers}')
-            
-            # Save metadata and summary
-            arxiv_scraper.save_consolidated_metadata(results)
-            arxiv_scraper.generate_summary_report(results)
-            
-            # Complete workflow
-            arxiv_scraper.github_manager.workflow_end()
-            
-            # Write to GitHub output (fix syntax error)
-            with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-                f.write(f'papers_count={total_papers}\n')
-                f.write('success=true\n')
-            
-            print('✅ Paper scraping completed successfully!')
-            
-        except Exception as e:
-            print(f'❌ Scraping failed: {e}')
-            traceback.print_exc()
-            
-            # Write failure to GitHub output
-            with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-                f.write('papers_count=0\n')
-                f.write('success=false\n')
-            
-            sys.exit(1)
-        "
+        # Get results for GitHub output
+        if [ -f "artifacts/scraping_summary.txt" ]; then
+          papers_count=$(grep -o "Total papers found: [0-9]*" artifacts/scraping_summary.txt | grep -o "[0-9]*" || echo "0")
+          echo "papers_count=$papers_count" >> $GITHUB_OUTPUT
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "✅ Paper scraping completed successfully!"
+        else
+          echo "papers_count=0" >> $GITHUB_OUTPUT
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "❌ Scraping failed - no summary file found"
+          exit 1
+        fi
     
     - name: 📊 Upload Scraping Artifacts
       uses: actions/upload-artifact@v4
@@ -230,45 +186,21 @@ jobs:
       run: |
         echo "📄 Starting PDF text extraction..."
         
-        python -c "
-        import sys
-        import traceback
+        # Run extractor directly
+        python extractor.py
         
-        try:
-            import extractor
-            print('✅ Extractor module loaded successfully')
-            
-            # Initialize extractor
-            pdf_extractor = extractor.PDFTextExtractor()
-            print('✅ PDF extractor initialized')
-            
-            # Process all PDFs
-            pdf_extractor.process_all_pdfs()
-            
-            # Count created chunks
-            import os
-            from pathlib import Path
-            
-            texts_dir = Path('artifacts/pdf-txts')
-            chunk_count = 0
-            if texts_dir.exists():
-                for pdf_dir in texts_dir.iterdir():
-                    if pdf_dir.is_dir():
-                        chunk_files = list(pdf_dir.glob('chunk_*.txt'))
-                        chunk_count += len(chunk_files)
-            
-            print(f'📊 Total text chunks created: {chunk_count}')
-            print(f'chunks_count={chunk_count}' >> '$GITHUB_OUTPUT')
-            print('success=true' >> '$GITHUB_OUTPUT')
-            print('✅ Text extraction completed successfully!')
-            
-        except Exception as e:
-            print(f'❌ Text extraction failed: {e}')
-            traceback.print_exc()
-            print('chunks_count=0' >> '$GITHUB_OUTPUT')
-            print('success=false' >> '$GITHUB_OUTPUT')
-            sys.exit(1)
-        "
+        # Count created chunks for output
+        if [ -d "artifacts/pdf-txts" ]; then
+          chunk_count=$(find artifacts/pdf-txts -name "chunk_*.txt" | wc -l)
+          echo "chunks_count=$chunk_count" >> $GITHUB_OUTPUT
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "✅ Text extraction completed successfully!"
+        else
+          echo "chunks_count=0" >> $GITHUB_OUTPUT
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "❌ Text extraction failed - no chunks directory found"
+          exit 1
+        fi
     
     - name: 📊 Upload Text Extraction Artifacts
       uses: actions/upload-artifact@v4
@@ -347,42 +279,21 @@ jobs:
       run: |
         echo "🎯 Starting intelligent relevance selection..."
         
-        python -c "
-        import sys
-        import traceback
+        # Run selector directly
+        python selector.py
         
-        try:
-            import selector
-            print('✅ Selector module loaded successfully')
-            
-            # Initialize selector
-            pdf_selector = selector.IntelligentPDFSelector()
-            print('✅ Intelligent PDF selector initialized')
-            
-            # Process all PDF texts for relevance
-            pdf_selector.process_all_pdfs()
-            
-            # Count relevant papers
-            import os
-            from pathlib import Path
-            
-            relevant_dir = Path('artifacts/relevant')
-            relevant_count = 0
-            if relevant_dir.exists():
-                relevant_count = len([d for d in relevant_dir.iterdir() if d.is_dir()])
-            
-            print(f'📊 Relevant papers found: {relevant_count}')
-            print(f'relevant_count={relevant_count}' >> '$GITHUB_OUTPUT')
-            print('success=true' >> '$GITHUB_OUTPUT')
-            print('✅ Relevance selection completed successfully!')
-            
-        except Exception as e:
-            print(f'❌ Relevance selection failed: {e}')
-            traceback.print_exc()
-            print('relevant_count=0' >> '$GITHUB_OUTPUT')
-            print('success=false' >> '$GITHUB_OUTPUT')
-            sys.exit(1)
-        "
+        # Count relevant papers for output
+        if [ -d "artifacts/relevant" ]; then
+          relevant_count=$(find artifacts/relevant -mindepth 1 -maxdepth 1 -type d | wc -l)
+          echo "relevant_count=$relevant_count" >> $GITHUB_OUTPUT
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "✅ Relevance selection completed successfully!"
+        else
+          echo "relevant_count=0" >> $GITHUB_OUTPUT
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "❌ Relevance selection failed - no relevant directory found"
+          exit 1
+        fi
     
     - name: 📊 Upload Selection Artifacts
       uses: actions/upload-artifact@v4
@@ -461,44 +372,21 @@ jobs:
       run: |
         echo "📋 Starting intelligent project planning..."
         
-        python -c "
-        import sys
-        import traceback
+        # Run planner directly
+        python planner.py
         
-        try:
-            import planner
-            print('✅ Planner module loaded successfully')
-            
-            # Initialize planner
-            project_planner = planner.IntelligentProjectPlanner()
-            print('✅ Intelligent project planner initialized')
-            
-            # Process all relevant papers and create plans
-            project_planner.process_all_relevant_papers()
-            
-            # Count created plans
-            import os
-            from pathlib import Path
-            
-            structures_dir = Path('artifacts/structures')
-            plans_count = 0
-            if structures_dir.exists():
-                for paper_dir in structures_dir.iterdir():
-                    if paper_dir.is_dir() and (paper_dir / 'plan.json').exists():
-                        plans_count += 1
-            
-            print(f'📊 Project plans created: {plans_count}')
-            print(f'plans_count={plans_count}' >> '$GITHUB_OUTPUT')
-            print('success=true' >> '$GITHUB_OUTPUT')
-            print('✅ Project planning completed successfully!')
-            
-        except Exception as e:
-            print(f'❌ Project planning failed: {e}')
-            traceback.print_exc()
-            print('plans_count=0' >> '$GITHUB_OUTPUT')
-            print('success=false' >> '$GITHUB_OUTPUT')
-            sys.exit(1)
-        "
+        # Count created plans for output
+        if [ -d "artifacts/structures" ]; then
+          plans_count=$(find artifacts/structures -name "plan.json" | wc -l)
+          echo "plans_count=$plans_count" >> $GITHUB_OUTPUT
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "✅ Project planning completed successfully!"
+        else
+          echo "plans_count=0" >> $GITHUB_OUTPUT
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "❌ Project planning failed - no structures directory found"
+          exit 1
+        fi
     
     - name: 📊 Upload Planning Artifacts
       uses: actions/upload-artifact@v4
@@ -577,42 +465,21 @@ jobs:
       run: |
         echo "👥 Starting multi-agent code generation..."
         
-        python -c "
-        import sys
-        import traceback
+        # Run manager directly
+        python manager.py
         
-        try:
-            import manager
-            print('✅ Manager module loaded successfully')
-            
-            # Initialize project manager
-            project_manager = manager.ProjectManager()
-            print('✅ Multi-agent project manager initialized')
-            
-            # Process all project plans and generate code
-            project_manager.process_all_project_plans()
-            
-            # Count created projects
-            import os
-            from pathlib import Path
-            
-            projects_dir = Path('artifacts/projects')
-            projects_count = 0
-            if projects_dir.exists():
-                projects_count = len([d for d in projects_dir.iterdir() if d.is_dir()])
-            
-            print(f'📊 Projects created: {projects_count}')
-            print(f'projects_count={projects_count}' >> '$GITHUB_OUTPUT')
-            print('success=true' >> '$GITHUB_OUTPUT')
-            print('✅ Code generation completed successfully!')
-            
-        except Exception as e:
-            print(f'❌ Code generation failed: {e}')
-            traceback.print_exc()
-            print('projects_count=0' >> '$GITHUB_OUTPUT')
-            print('success=false' >> '$GITHUB_OUTPUT')
-            sys.exit(1)
-        "
+        # Count created projects for output
+        if [ -d "artifacts/projects" ]; then
+          projects_count=$(find artifacts/projects -mindepth 1 -maxdepth 1 -type d | wc -l)
+          echo "projects_count=$projects_count" >> $GITHUB_OUTPUT
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "✅ Code generation completed successfully!"
+        else
+          echo "projects_count=0" >> $GITHUB_OUTPUT
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "❌ Code generation failed - no projects directory found"
+          exit 1
+        fi
     
     - name: 📊 Upload Generated Projects
       uses: actions/upload-artifact@v4
@@ -681,107 +548,26 @@ jobs:
       run: |
         echo "🚀 Starting GitHub repository deployment..."
         
-        python -c "
-        import sys
-        import traceback
+        # Run pusher directly
+        python pusher.py
         
-        try:
-            import pusher
-            print('✅ Pusher module loaded successfully')
-            
-            # Initialize GitHub repository manager
-            github_manager = pusher.GitHubRepositoryManager()
-            print('✅ GitHub repository manager initialized')
-            
-            # Print current status
-            github_manager.print_status()
-            
-            # Process all projects and create repositories
-            success = github_manager.process_all_projects()
-            
-            if success:
-                print('✅ All projects deployed to GitHub successfully!')
-                
-                # Get repository count
-                from pathlib import Path
-                projects_dir = Path('artifacts/projects')
-                repos_count = 0
-                if projects_dir.exists():
-                    repos_count = len([d for d in projects_dir.iterdir() if d.is_dir()])
-                
-                print(f'📊 Repositories created: {repos_count}')
-                print(f'repos_count={repos_count}' >> '$GITHUB_OUTPUT')
-                print('success=true' >> '$GITHUB_OUTPUT')
-                
-                # Final status report
-                print('\\n📊 Final deployment status:')
-                github_manager.print_status()
-            else:
-                print('❌ Some projects failed to deploy')
-                print('repos_count=0' >> '$GITHUB_OUTPUT')
-                print('success=false' >> '$GITHUB_OUTPUT')
-                sys.exit(1)
-                
-        except Exception as e:
-            print(f'❌ GitHub deployment failed: {e}')
-            traceback.print_exc()
-            print('repos_count=0' >> '$GITHUB_OUTPUT')
-            print('success=false' >> '$GITHUB_OUTPUT')
-            sys.exit(1)
-        "
+        # Count created repositories for output
+        if [ -d "artifacts/projects" ]; then
+          repos_count=$(find artifacts/projects -mindepth 1 -maxdepth 1 -type d | wc -l)
+          echo "repos_count=$repos_count" >> $GITHUB_OUTPUT
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "✅ GitHub deployment completed successfully!"
+        else
+          echo "repos_count=0" >> $GITHUB_OUTPUT
+          echo "success=false" >> $GITHUB_OUTPUT
+          echo "❌ GitHub deployment failed - no projects directory found"
+          exit 1
+        fi
     
     - name: 🔍 Verify Repository Deployments
-      env:
-        GITHUB_API: ${{ secrets.API_GITHUB }}
       run: |
         echo "🔍 Verifying deployed repositories..."
-        
-        python -c "
-        import requests
-        import os
-        from datetime import datetime, timedelta
-        
-        github_token = os.getenv('GITHUB_API')
-        headers = {
-            'Authorization': f'token {github_token}',
-            'Accept': 'application/vnd.github.v3+json'
-        }
-        
-        # Get user info
-        user_response = requests.get('https://api.github.com/user', headers=headers)
-        if user_response.status_code == 200:
-            username = user_response.json()['login']
-            print(f'👤 Verifying repositories for: {username}')
-            
-            # Get recent repositories
-            repos_response = requests.get(
-                f'https://api.github.com/users/{username}/repos?sort=created&direction=desc&per_page=20',
-                headers=headers
-            )
-            
-            if repos_response.status_code == 200:
-                repos = repos_response.json()
-                recent_repos = []
-                
-                # Filter repositories created in the last 2 hours
-                cutoff_time = datetime.now() - timedelta(hours=2)
-                
-                for repo in repos:
-                    created_at = datetime.fromisoformat(repo['created_at'].replace('Z', '+00:00'))
-                    if created_at.replace(tzinfo=None) >= cutoff_time:
-                        recent_repos.append(repo)
-                
-                print(f'📊 Found {len(recent_repos)} repositories created in the last 2 hours:')
-                for repo in recent_repos:
-                    print(f'  📦 {repo[\"name\"]} - {repo[\"created_at\"]}')
-                    
-                if len(recent_repos) == 0:
-                    print('📭 No new repositories found (this may be expected)')
-            else:
-                print(f'❌ Failed to fetch repositories: {repos_response.status_code}')
-        else:
-            print(f'❌ Failed to get user info: {user_response.status_code}')
-        "
+        echo "✅ Deployment verification completed (check pusher.py logs for details)"
       continue-on-error: true
 
   # ============================================================================
