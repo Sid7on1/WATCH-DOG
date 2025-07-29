@@ -46,6 +46,10 @@ class GitHubRepositoryManager:
         self.rate_limit_delay = 1  # seconds between API calls
         self.last_api_call = 0
         
+        # Activity logging
+        self.activity_log = []
+        self.workflow_start_time = None
+        
         print(f"🔗 GitHub Repository Manager initialized")
         print(f"📁 Repository: {self.github_username}/{self.repo_name}")
         print(f"🔑 Token configured: {'✅' if self.github_token else '❌'}")
@@ -394,39 +398,79 @@ class GitHubRepositoryManager:
             print(f"❌ Error syncing from repository: {e}")
             return False
     
+    def log_activity(self, activity_type, description, status="success", details=None):
+        """Log workflow activities"""
+        activity = {
+            "timestamp": datetime.now().isoformat(),
+            "type": activity_type,
+            "description": description,
+            "status": status,
+            "details": details or {}
+        }
+        self.activity_log.append(activity)
+        
+        # Print activity with appropriate emoji
+        emoji = "✅" if status == "success" else "❌" if status == "error" else "⚠️"
+        print(f"{emoji} {activity_type.upper()}: {description}")
+
     def workflow_start(self):
         """Called at the start of workflow - loads seen titles and syncs artifacts"""
+        self.workflow_start_time = datetime.now()
+        
         print(f"\n{'='*80}")
         print("🚀 WORKFLOW START - GITHUB SYNC")
         print(f"{'='*80}")
         
+        self.log_activity("workflow", "Workflow started", "success")
+        
         # Load seen titles (already done in __init__, but refresh)
         self.load_seen_titles()
+        self.log_activity("sync", f"Loaded {len(self.seen_titles)} seen titles from GitHub", "success")
         
         # Sync artifacts from repository
-        self.sync_artifacts_from_repo()
+        if self.sync_artifacts_from_repo():
+            self.log_activity("sync", "Artifacts synced from GitHub repository", "success")
+        else:
+            self.log_activity("sync", "Failed to sync artifacts from GitHub", "error")
         
         print(f"✅ Workflow initialized with {len(self.seen_titles)} seen titles")
         return True
     
     def workflow_end(self, new_titles=None):
-        """Called at the end of workflow - saves seen titles, syncs artifacts, and creates project repositories"""
+        """Called at the end of workflow - saves seen titles, syncs artifacts, creates project repositories, logs activities, and cleans up"""
         print(f"\n{'='*80}")
         print("🏁 WORKFLOW END - GITHUB SYNC")
         print(f"{'='*80}")
         
         # Add new titles if provided
         if new_titles:
-            self.add_seen_titles(new_titles)
+            added = self.add_seen_titles(new_titles)
+            if added:
+                self.log_activity("titles", f"Added {len(new_titles)} new titles to seen list", "success")
         
         # Save seen titles
-        self.save_seen_titles()
+        if self.save_seen_titles():
+            self.log_activity("sync", f"Saved {len(self.seen_titles)} seen titles to GitHub", "success")
+        else:
+            self.log_activity("sync", "Failed to save seen titles to GitHub", "error")
         
         # Sync artifacts to main repository
-        self.sync_artifacts_to_repo()
+        if self.sync_artifacts_to_repo():
+            self.log_activity("sync", "Artifacts synced to GitHub repository", "success")
+        else:
+            self.log_activity("sync", "Failed to sync artifacts to GitHub", "error")
         
         # Process all projects and create individual repositories
-        self.process_all_projects()
+        if self.process_all_projects():
+            self.log_activity("projects", "All projects processed and pushed to GitHub", "success")
+        else:
+            self.log_activity("projects", "Some projects failed to process", "warning")
+        
+        # Upload activity log to GitHub
+        self.upload_activity_log()
+        
+        # Clean up all local artifacts
+        self.cleanup_all_artifacts()
         
         print(f"✅ Workflow completed with {len(self.seen_titles)} total seen titles")
         return True
@@ -455,14 +499,30 @@ class GitHubRepositoryManager:
             print(f"❌ Error getting repository stats: {e}")
             return None
     
+    def repository_already_exists(self, repo_name):
+        """Check if repository already exists"""
+        try:
+            self.rate_limit_wait()
+            response = requests.get(f"{self.api_base}/repos/{self.github_username}/{repo_name}", 
+                                  headers=self.headers)
+            return response.status_code == 200
+        except Exception as e:
+            print(f"⚠️ Error checking if repository exists: {e}")
+            return False
+    
     def create_project_repository(self, project_name, project_path):
         """Create a new GitHub repository for a specific project"""
         try:
-            print(f"🚀 Creating repository for project: {project_name}")
-            
             # Clean project name for repository (remove special characters)
             repo_name = project_name.lower().replace(' ', '_').replace('-', '_')
             repo_name = ''.join(c for c in repo_name if c.isalnum() or c == '_')
+            
+            # Check if repository already exists
+            if self.repository_already_exists(repo_name):
+                print(f"⏭️ Repository {self.github_username}/{repo_name} already exists, skipping creation...")
+                return None  # Skip this project to avoid conflicts
+            
+            print(f"🚀 Creating repository for project: {project_name}")
             
             # Repository data
             repo_data = {
@@ -483,9 +543,9 @@ class GitHubRepositoryManager:
                 time.sleep(3)  # Wait for repository to be fully initialized
                 return repo_name
             elif response.status_code == 422:
-                # Repository might already exist
-                print(f"⚠️ Repository {repo_name} might already exist, continuing...")
-                return repo_name
+                # Repository might already exist (race condition)
+                print(f"⚠️ Repository {repo_name} already exists (race condition), skipping...")
+                return None
             else:
                 print(f"❌ Failed to create repository {repo_name}: {response.status_code}")
                 print(f"Response: {response.text}")
@@ -565,8 +625,29 @@ class GitHubRepositoryManager:
             if response.status_code in [200, 201]:
                 print(f"  ✅ {repo_file_path}")
                 return True
+            elif response.status_code == 409:
+                print(f"  ⚠️ File {repo_file_path} already exists, attempting to update...")
+                # Try to get the current file SHA and retry
+                time.sleep(2)  # Brief delay
+                existing_content, existing_sha = self.get_file_from_project_repo(repo_file_path, repo_name)
+                if existing_sha:
+                    request_data["sha"] = existing_sha
+                    retry_response = requests.put(f"{project_contents_url}/{repo_file_path}",
+                                                headers=self.headers,
+                                                json=request_data)
+                    if retry_response.status_code in [200, 201]:
+                        print(f"  ✅ {repo_file_path} (updated)")
+                        return True
+                    else:
+                        print(f"  ❌ Retry failed for {repo_file_path}: {retry_response.status_code}")
+                        return False
+                else:
+                    print(f"  ❌ Could not get SHA for existing {repo_file_path}")
+                    return False
             else:
                 print(f"  ❌ Failed to upload {repo_file_path}: {response.status_code}")
+                if response.text:
+                    print(f"      Response: {response.text[:200]}")
                 return False
                 
         except Exception as e:
@@ -593,6 +674,146 @@ class GitHubRepositoryManager:
                 
         except Exception as e:
             return None, None
+    
+    def cleanup_local_project(self, project_path, project_name):
+        """Delete local project directory after successful push to GitHub"""
+        try:
+            print(f"🧹 Cleaning up local project directory: {project_name}")
+            
+            if project_path.exists() and project_path.is_dir():
+                shutil.rmtree(project_path)
+                print(f"✅ Deleted local project directory: {project_path}")
+                return True
+            else:
+                print(f"⚠️ Project directory not found or not a directory: {project_path}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error cleaning up project directory {project_path}: {e}")
+            return False
+    
+    def upload_activity_log(self):
+        """Upload workflow activity log to GitHub repository"""
+        try:
+            if not self.activity_log:
+                print("📝 No activities to log")
+                return True
+            
+            print(f"📝 Uploading activity log with {len(self.activity_log)} activities...")
+            
+            # Calculate workflow duration
+            workflow_duration = None
+            if self.workflow_start_time:
+                duration_seconds = (datetime.now() - self.workflow_start_time).total_seconds()
+                workflow_duration = f"{duration_seconds:.2f} seconds"
+            
+            # Create comprehensive log data
+            log_data = {
+                "workflow_id": f"workflow_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                "start_time": self.workflow_start_time.isoformat() if self.workflow_start_time else None,
+                "end_time": datetime.now().isoformat(),
+                "duration": workflow_duration,
+                "total_activities": len(self.activity_log),
+                "activities": self.activity_log,
+                "summary": {
+                    "success_count": len([a for a in self.activity_log if a["status"] == "success"]),
+                    "error_count": len([a for a in self.activity_log if a["status"] == "error"]),
+                    "warning_count": len([a for a in self.activity_log if a["status"] == "warning"])
+                }
+            }
+            
+            # Convert to JSON
+            log_content = json.dumps(log_data, indent=2, ensure_ascii=False)
+            encoded_content = base64.b64encode(log_content.encode('utf-8')).decode('utf-8')
+            
+            # Create log file path with timestamp
+            log_filename = f"logs/workflow_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            
+            # Upload log file
+            request_data = {
+                "message": f"Add workflow activity log - {len(self.activity_log)} activities",
+                "content": encoded_content
+            }
+            
+            self.rate_limit_wait()
+            response = requests.put(f"{self.contents_url}/{log_filename}",
+                                  headers=self.headers,
+                                  json=request_data)
+            
+            if response.status_code in [200, 201]:
+                print(f"✅ Activity log uploaded: {log_filename}")
+                self.log_activity("logging", f"Activity log uploaded with {len(self.activity_log)} activities", "success")
+                return True
+            else:
+                print(f"❌ Failed to upload activity log: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error uploading activity log: {e}")
+            return False
+    
+    def cleanup_all_artifacts(self):
+        """Clean up all local artifacts except seen titles after successful workflow completion"""
+        try:
+            print(f"\n{'='*80}")
+            print("🧹 CLEANING UP LOCAL ARTIFACTS (PRESERVING SEEN TITLES)")
+            print(f"{'='*80}")
+            
+            if not self.artifacts_dir.exists():
+                print(f"📁 Artifacts directory doesn't exist: {self.artifacts_dir}")
+                return True
+            
+            # Preserve seen-pdfs.txt file
+            seen_pdfs_file = self.artifacts_dir / "seen-pdfs.txt"
+            seen_pdfs_backup = None
+            
+            if seen_pdfs_file.exists():
+                # Create backup of seen titles
+                seen_pdfs_backup = seen_pdfs_file.read_text(encoding='utf-8')
+                print(f"💾 Backing up seen titles: {len(seen_pdfs_backup.splitlines())} titles")
+            
+            # Count files before cleanup
+            total_files = 0
+            total_dirs = 0
+            
+            for item in self.artifacts_dir.rglob("*"):
+                if item.is_file():
+                    total_files += 1
+                elif item.is_dir():
+                    total_dirs += 1
+            
+            print(f"📊 Found {total_files} files and {total_dirs} directories to clean up")
+            
+            # Remove entire artifacts directory
+            shutil.rmtree(self.artifacts_dir)
+            print(f"✅ Deleted entire artifacts directory: {self.artifacts_dir}")
+            
+            # Recreate empty artifacts directory for next run
+            self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+            print(f"📁 Created fresh artifacts directory for next workflow")
+            
+            # Restore seen titles if they existed
+            if seen_pdfs_backup:
+                seen_pdfs_file.write_text(seen_pdfs_backup, encoding='utf-8')
+                titles_count = len(seen_pdfs_backup.splitlines())
+                print(f"✅ Restored seen titles: {titles_count} titles preserved")
+                self.log_activity("cleanup", f"Preserved {titles_count} seen titles during cleanup", "success")
+            
+            self.log_activity("cleanup", f"Cleaned up {total_files} files and {total_dirs} directories (preserved seen titles)", "success", {
+                "files_deleted": total_files,
+                "directories_deleted": total_dirs,
+                "seen_titles_preserved": len(seen_pdfs_backup.splitlines()) if seen_pdfs_backup else 0,
+                "artifacts_path": str(self.artifacts_dir)
+            })
+            
+            print(f"🎉 Cleanup completed successfully! Seen titles preserved for next run.")
+            print(f"{'='*80}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error cleaning up artifacts: {e}")
+            self.log_activity("cleanup", f"Failed to clean up artifacts: {str(e)}", "error")
+            return False
     
     def process_all_projects(self):
         """Process all projects in the artifacts/projects directory"""
@@ -624,6 +845,9 @@ class GitHubRepositoryManager:
                         if self.upload_project_to_repository(project_path, repo_name):
                             processed_count += 1
                             print(f"✅ Successfully processed {project_name} -> {repo_name}")
+                            
+                            # Clean up local project directory after successful push
+                            self.cleanup_local_project(project_path, project_name)
                         else:
                             failed_count += 1
                             print(f"❌ Failed to upload files for {project_name}")
