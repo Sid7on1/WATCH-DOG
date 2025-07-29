@@ -100,6 +100,41 @@ class ArxivScraper:
         print(f"Found {len(papers)} papers for {domain_name}")
         return papers
     
+    def fetch_papers_adaptive(self, domain_name, categories, target_new_papers):
+        """Fetch papers with adaptive search - keeps searching until we find new papers or hit limit"""
+        max_attempts = 3  # Maximum search attempts
+        search_multiplier = 1
+        
+        for attempt in range(max_attempts):
+            # Increase search size each attempt
+            search_size = target_new_papers * search_multiplier
+            papers = self.fetch_papers(domain_name, categories, search_size)
+            
+            if not papers:
+                break
+                
+            # Check how many are new
+            new_count = 0
+            for paper in papers:
+                if not self.is_pdf_seen(paper['title']):
+                    new_count += 1
+            
+            # If we found enough new papers, return all papers
+            if new_count >= target_new_papers or search_multiplier >= 4:
+                print(f"📈 Adaptive search found {new_count} new papers (attempt {attempt + 1})")
+                return papers
+            
+            # If all papers are seen, try searching more
+            if new_count == 0:
+                search_multiplier *= 2
+                print(f"🔍 All {len(papers)} papers already seen, expanding search (attempt {attempt + 1})")
+            else:
+                # Found some new papers, return them
+                return papers
+        
+        # Return whatever we found in the last attempt
+        return papers if 'papers' in locals() else []
+    
     def parse_paper_entry(self, entry, namespace):
         """Parse individual paper entry from XML"""
         try:
@@ -222,8 +257,8 @@ class ArxivScraper:
             print(f"Processing domain: {domain_name}")
             print(f"{'='*60}")
             
-            # Fetch papers
-            papers = self.fetch_papers(domain_name, categories, max_results_per_domain)
+            # Fetch papers with adaptive search
+            papers = self.fetch_papers_adaptive(domain_name, categories, max_results_per_domain)
             
             if papers:
                 # Filter out already seen papers
