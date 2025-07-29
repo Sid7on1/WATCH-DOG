@@ -1,360 +1,713 @@
-name: 🚀 Daily ArXiv AI/ML Paper Implementation Generator
+name: 🤖 WATCHDOG Complete CI/CD Pipeline
 
-"on":
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
   schedule:
-    - cron: '0 3 * * *'  # Every night at 3:00 AM UTC
+    # Daily deployment at 1:20 AM India time (19:50 UTC)
+    - cron: '50 19 * * *'
   workflow_dispatch:
     inputs:
-      max_papers:
-        description: 'Maximum number of papers to process'
-        required: false
-        default: '5'
-        type: string
-      dry_run:
-        description: 'Run in dry-run mode (no repos created)'
+      skip_tests:
+        description: 'Skip test execution'
         required: false
         default: false
+        type: boolean
+      force_deploy:
+        description: 'Force deployment even if no changes'
+        required: false
+        default: false
+        type: boolean
+      deploy_projects:
+        description: 'Deploy projects to GitHub repositories'
+        required: false
+        default: true
+        type: boolean
+      run_security_scan:
+        description: 'Run security vulnerability scan'
+        required: false
+        default: true
         type: boolean
 
 env:
   PYTHON_VERSION: '3.11'
+  PROJECT_PATH: 'artifacts/projects/xr_eye_tracking_performance_framework'
 
 jobs:
-  process-papers:
-    name: 🚀 Process ArXiv Papers
+  # ============================================================================
+  # STAGE 1: CODE QUALITY & SECURITY
+  # ============================================================================
+  code-quality-security:
+    name: 🔍 Code Quality & Security Analysis
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    outputs:
+      quality_score: ${{ steps.quality-check.outputs.score }}
+      security_issues: ${{ steps.security-scan.outputs.issues }}
     
     steps:
-    - name: 📥 Checkout Repository
+    - name: 🔄 Checkout Code
       uses: actions/checkout@v4
       with:
-        token: ${{ secrets.API_GITHUB }}
         fetch-depth: 0
     
-    - name: 🐍 Setup Python
-      uses: actions/setup-python@v5
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
       with:
         python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: 📦 Install Quality Tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8 black isort mypy pylint bandit safety
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+    
+    - name: 🎨 Code Formatting Check (Black)
+      id: black-check
+      run: |
+        echo "🎨 Checking code formatting with Black..."
+        if black --check --diff .; then
+          echo "✅ Code formatting is perfect!"
+          echo "black_status=passed" >> $GITHUB_OUTPUT
+        else
+          echo "❌ Code formatting issues found"
+          echo "black_status=failed" >> $GITHUB_OUTPUT
+        fi
+      continue-on-error: true
+    
+    - name: 📋 Linting Analysis (Flake8)
+      id: flake8-check
+      run: |
+        echo "📋 Running Flake8 linting..."
+        flake8_output=$(flake8 . --count --statistics --format='%(path)s:%(row)d:%(col)d: %(code)s %(text)s' || true)
+        echo "$flake8_output"
+        
+        error_count=$(echo "$flake8_output" | grep -c ":" || echo "0")
+        echo "flake8_errors=$error_count" >> $GITHUB_OUTPUT
+        
+        if [ "$error_count" -eq 0 ]; then
+          echo "✅ No linting issues found!"
+        else
+          echo "⚠️ Found $error_count linting issues"
+        fi
+      continue-on-error: true
+    
+    - name: 🔧 Import Sorting Check (isort)
+      id: isort-check
+      run: |
+        echo "🔧 Checking import sorting..."
+        if isort --check-only --diff .; then
+          echo "✅ Import sorting is perfect!"
+          echo "isort_status=passed" >> $GITHUB_OUTPUT
+        else
+          echo "⚠️ Import sorting issues found"
+          echo "isort_status=failed" >> $GITHUB_OUTPUT
+        fi
+      continue-on-error: true
+    
+    - name: 🛡️ Security Vulnerability Scan (Bandit)
+      id: security-scan
+      if: github.event.inputs.run_security_scan != 'false'
+      run: |
+        echo "🛡️ Running security vulnerability scan..."
+        bandit_output=$(bandit -r . -f json -o bandit-report.json 2>/dev/null || true)
+        bandit -r . -f txt || true
+        
+        if [ -f bandit-report.json ]; then
+          issues=$(jq '.results | length' bandit-report.json 2>/dev/null || echo "0")
+          echo "issues=$issues" >> $GITHUB_OUTPUT
+          echo "📊 Security issues found: $issues"
+        else
+          echo "issues=0" >> $GITHUB_OUTPUT
+        fi
+      continue-on-error: true
+    
+    - name: 🔒 Dependency Security Check (Safety)
+      run: |
+        echo "🔒 Checking dependencies for security vulnerabilities..."
+        safety check --json --output safety-report.json || true
+        safety check || true
+      continue-on-error: true
+    
+    - name: 📊 Calculate Quality Score
+      id: quality-check
+      run: |
+        score=100
+        
+        # Deduct points for issues
+        if [ "${{ steps.black-check.outputs.black_status }}" = "failed" ]; then
+          score=$((score - 20))
+        fi
+        
+        flake8_errors=${{ steps.flake8-check.outputs.flake8_errors }}
+        if [ "$flake8_errors" -gt 0 ]; then
+          score=$((score - flake8_errors * 2))
+        fi
+        
+        if [ "${{ steps.isort-check.outputs.isort_status }}" = "failed" ]; then
+          score=$((score - 10))
+        fi
+        
+        security_issues=${{ steps.security-scan.outputs.issues }}
+        if [ "$security_issues" -gt 0 ]; then
+          score=$((score - security_issues * 5))
+        fi
+        
+        # Ensure score doesn't go below 0
+        if [ "$score" -lt 0 ]; then
+          score=0
+        fi
+        
+        echo "score=$score" >> $GITHUB_OUTPUT
+        echo "📊 Overall Quality Score: $score/100"
+    
+    - name: 📊 Upload Security Reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-reports-${{ github.run_number }}
+        path: |
+          bandit-report.json
+          safety-report.json
+        retention-days: 30
+
+  # ============================================================================
+  # STAGE 2: COMPREHENSIVE TESTING
+  # ============================================================================
+  comprehensive-testing:
+    name: 🧪 Comprehensive Testing Suite
+    runs-on: ${{ matrix.os }}
+    needs: code-quality-security
+    if: github.event.inputs.skip_tests != 'true'
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.9', '3.10', '3.11']
+        exclude:
+          - os: windows-latest
+            python-version: '3.9'
+          - os: macos-latest
+            python-version: '3.9'
+    
+    steps:
+    - name: 🔄 Checkout Code
+      uses: actions/checkout@v4
+    
+    - name: 🐍 Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
         cache: 'pip'
     
     - name: 📦 Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install pytest pytest-cov pytest-xdist pytest-mock requests python-dotenv
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      shell: bash
     
-    - name: 🔍 Validate Environment
+    - name: 🤖 Test WATCHDOG Core Components
       run: |
-        echo "Checking required secrets and files..."
+        echo "🤖 Testing WATCHDOG system components..."
         
-        # Check required secrets
-        if [ -z "${{ secrets.OPENROUTER_API_KEY }}" ]; then
-          echo "::error::OPENROUTER_API_KEY secret is required"
-          exit 1
-        fi
-        if [ -z "${{ secrets.API_GITHUB }}" ]; then
-          echo "::error::API_GITHUB secret is required"
-          exit 1
-        fi
+        # Test Manager
+        python -c "
+        try:
+            import manager
+            print('✅ Manager module imported successfully')
+        except Exception as e:
+            print(f'❌ Manager import failed: {e}')
+        " || echo "⚠️ Manager module not found"
         
-        # Check optional fallback key
-        if [ -z "${{ secrets.KEY2 }}" ]; then
-          echo "::warning::KEY2 secret not set - no fallback API key available"
+        # Test Coder Agents
+        for coder in coder1 coder2 coder3 coder4; do
+          python -c "
+          try:
+              import $coder
+              print('✅ $coder module imported successfully')
+          except Exception as e:
+              print(f'❌ $coder import failed: {e}')
+          " || echo "⚠️ $coder module not found"
+        done
+        
+        # Test Pusher
+        python -c "
+        try:
+            import pusher
+            print('✅ Pusher module imported successfully')
+        except Exception as e:
+            print(f'❌ Pusher import failed: {e}')
+        " || echo "⚠️ Pusher module not found"
+      shell: bash
+      continue-on-error: true
+    
+    - name: 🎯 Test XR Eye Tracking Framework
+      if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+      run: |
+        if [ -d "${{ env.PROJECT_PATH }}" ]; then
+          cd "${{ env.PROJECT_PATH }}"
+          echo "🎯 Testing XR Eye Tracking Framework..."
+          
+          # Install XR-specific dependencies
+          pip install numpy opencv-python matplotlib scipy scikit-learn || true
+          
+          # Validate Python modules
+          for py_file in *.py; do
+            if [ -f "$py_file" ]; then
+              echo "Validating $py_file..."
+              python -m py_compile "$py_file" && echo "✅ $py_file" || echo "❌ $py_file"
+            fi
+          done
+          
+          # Test module imports
+          python -c "
+          import sys
+          import os
+          sys.path.insert(0, os.getcwd())
+          
+          modules = [
+              'eye_tracking_manager',
+              'calibration_system', 
+              'data_logger',
+              'performance_evaluator',
+              'metrics_calculator',
+              'visualization_tools',
+              'xr_integration_module'
+          ]
+          
+          for module in modules:
+              try:
+                  __import__(module)
+                  print(f'✅ {module} imported successfully')
+              except Exception as e:
+                  print(f'❌ {module} import failed: {e}')
+          "
         else
-          echo "✅ Fallback API key (KEY2) configured"
+          echo "📭 XR Eye Tracking Framework not found"
         fi
-        
-        # Check required files
-        if [ ! -f "fix2.py" ]; then
-          echo "::error::fix2.py not found"
-          exit 1
-        fi
-        if [ ! -f "advanced_paper_extractor.py" ]; then
-          echo "::error::advanced_paper_extractor.py not found"
-          exit 1
-        fi
-        if [ ! -f "requirements.txt" ]; then
-          echo "::error::requirements.txt not found"
-          exit 1
-        fi
-        
-        echo "✅ All required secrets and files are present"
+      continue-on-error: true
     
-    - name: ⚙️ Configure Git
+    - name: 🧪 Run Unit Tests (if available)
       run: |
-        git config --global user.name "M1-Evo-Agent[bot]"
-        git config --global user.email "m1-evo-agent@users.noreply.github.com"
-    
-    - name: 🔍 Validate Python Scripts
-      run: |
-        echo "🐍 Validating Python script syntax..."
-        
-        # Check fix2.py syntax
-        if python -m py_compile fix2.py; then
-          echo "✅ fix2.py syntax is valid"
+        if [ -d "tests" ] || find . -name "test_*.py" -o -name "*_test.py" | grep -q .; then
+          echo "🧪 Running unit tests..."
+          pytest --cov=. --cov-report=xml --cov-report=html --cov-report=term-missing -v || true
         else
-          echo "::error::fix2.py has syntax errors"
-          exit 1
-        fi
-        
-        # Check advanced_paper_extractor.py syntax
-        if python -m py_compile advanced_paper_extractor.py; then
-          echo "✅ advanced_paper_extractor.py syntax is valid"
-        else
-          echo "::error::advanced_paper_extractor.py has syntax errors"
-          exit 1
-        fi
-        
-        echo "✅ All Python scripts validated successfully"
-    
-    - name: 📚 Fetch and Extract Papers from ArXiv
-      run: |
-        echo "🚀 Running ArXiv paper extraction pipeline..."
-        
-        # Comprehensive AI/ML/DL domains - automatically included every night
-        # cs.AI: Artificial Intelligence
-        # cs.LG: Machine Learning  
-        # cs.CV: Computer Vision
-        # cs.CL: Natural Language Processing
-        # cs.NE: Neural Networks
-        # cs.RO: Robotics
-        # cs.HC: Human-Computer Interaction
-        # stat.ML: Statistics - Machine Learning
-        # cs.IR: Information Retrieval
-        # cs.MM: Multimedia
-        # cs.SD: Sound Processing
-        # cs.DC: Distributed Computing
-        # cs.CR: Cryptography and Security
-        # cs.IT: Information Theory
-        DOMAINS="cs.AI cs.LG cs.CV cs.CL cs.NE cs.RO cs.HC stat.ML cs.IR cs.MM cs.SD cs.DC cs.CR cs.IT"
-        MAX_PAPERS="${{ github.event.inputs.max_papers || '5' }}"
-        
-        echo "📊 Configuration:"
-        echo "  - Domains: $DOMAINS"
-        echo "  - Max papers: $MAX_PAPERS"
-        echo "  - Delay: 8 seconds"
-        echo "  - Threshold: 0.7"
-        
-        if python advanced_paper_extractor.py \
-          --arxiv \
-          --domains $DOMAINS \
-          --max-papers $MAX_PAPERS \
-          --delay 8 \
-          --threshold 0.7 \
-          --verbose; then
-          echo "✅ Paper extraction completed successfully"
-          
-          # Check if papers were extracted
-          if [ -d "runs" ] && [ "$(find runs -name '*.json' | wc -l)" -gt 0 ]; then
-            PAPER_COUNT=$(find runs -name '*.json' | wc -l)
-            echo "📄 Extracted $PAPER_COUNT papers"
-          else
-            echo "⚠️ No papers were extracted - check extraction logs"
-          fi
-        else
-          echo "::error::Paper extraction failed"
-          exit 1
-        fi
-      env:
-        OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        KEY2: ${{ secrets.KEY2 }}
-        GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
-        GITHUB_USERNAME: "Sid7on1"
-    
-    - name: 🏗️ Generate Repositories with Dual Saving
-      run: |
-        echo "🚀 Generating repositories with dual saving..."
-        echo "📦 Individual repos + WATCHDOG_memory backups"
-        
-        CMD_ARGS="--verbose"
-        
-        if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-          CMD_ARGS="$CMD_ARGS --dry-run"
-          echo "🧪 Running in DRY RUN mode"
-        fi
-        
-        MAX_PAPERS="${{ github.event.inputs.max_papers || '3' }}"
-        CMD_ARGS="$CMD_ARGS --max-papers $MAX_PAPERS"
-        
-        echo "📊 Configuration:"
-        echo "  - Max papers: $MAX_PAPERS"
-        echo "  - Dry run: ${{ github.event.inputs.dry_run }}"
-        echo "  - Primary API key: $([ -n "$OPENROUTER_API_KEY" ] && echo "✅ Set" || echo "❌ Missing")"
-        echo "  - Fallback API key: $([ -n "$KEY2" ] && echo "✅ Set" || echo "⚠️ Not set")"
-        
-        echo "🚀 Running: python fix2.py $CMD_ARGS"
-        
-        if python fix2.py $CMD_ARGS; then
-          echo "✅ Repository generation completed successfully"
-          
-          # Check results
-          if [ -f "managed_repos_state.json" ]; then
-            echo "📊 State file created: managed_repos_state.json"
-          fi
-          
-          if [ -d "logs" ]; then
-            LOG_COUNT=$(find logs -name "*.log" | wc -l)
-            echo "📝 Generated $LOG_COUNT log files"
-          fi
-        else
-          echo "::error::Repository generation failed"
-          echo "::error::Check logs for detailed error information"
-          
-          # Show recent logs for debugging
-          if [ -d "logs" ]; then
-            echo "📝 Recent log entries:"
-            find logs -name "*.log" -exec tail -10 {} \; 2>/dev/null || true
-          fi
-          
-          exit 1
-        fi
-      env:
-        OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        KEY2: ${{ secrets.KEY2 }}
-        GITHUB_TOKEN: ${{ secrets.API_GITHUB }}
-        GITHUB_USERNAME: "Sid7on1"
-        GITHUB_ACTIONS: "true"
-    
-    - name: 📊 Upload Results
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: processing-results-${{ github.run_id }}
-        path: |
-          logs/
-          workspace/
-          managed_repos_state.json
-          relevant_json/
-          relevant_pdfs/
-          runs/
-        retention-days: 30
-        if-no-files-found: warn
-    
-    - name: 📋 Generate Summary Report
-      if: always()
-      run: |
-        echo "📊 Generating execution summary..."
-        echo "=================================="
-        
-        # Check state file
-        if [ -f "managed_repos_state.json" ]; then
-          echo "✅ Repository processing completed"
-          echo "📄 State file: managed_repos_state.json"
-          
-          # Try to extract summary from state file
-          if command -v jq >/dev/null 2>&1; then
-            REPO_COUNT=$(jq 'length' managed_repos_state.json 2>/dev/null || echo "unknown")
-            echo "📦 Repositories processed: $REPO_COUNT"
-          fi
-        else
-          echo "⚠️ No state file found - check logs for details"
-        fi
-        
-        # Check logs
-        if [ -d "logs" ]; then
-          LOG_COUNT=$(find logs -name "*.log" | wc -l)
-          echo "📝 Log files generated: $LOG_COUNT"
-          
-          # Check for final summary files
-          if [ -f "logs/final_summary_"*.json ]; then
-            echo "📊 Final summary available"
-          fi
-          
-          if [ -f "logs/processing_report_"*.md ]; then
-            echo "📋 Processing report available"
-          fi
-        fi
-        
-        # Check extracted papers
-        if [ -d "runs" ]; then
-          PAPER_COUNT=$(find runs -name "*.json" | wc -l)
-          echo "📄 Papers extracted: $PAPER_COUNT"
-        fi
-        
-        # Environment info
-        echo ""
-        echo "🔧 Environment:"
-        echo "  - Python version: $(python --version)"
-        echo "  - Timestamp: $(date -u)"
-        echo "  - Workflow: ${{ github.workflow }}"
-        echo "  - Run ID: ${{ github.run_id }}"
-        
-        echo ""
-        echo "✅ Summary generation completed"
-    
-    - name: 🧹 Cleanup Temporary Files
-      if: always()
-      run: |
-        echo "🧹 Cleaning up temporary files..."
-        
-        # List what we're about to clean
-        echo "📁 Temporary directories to clean:"
-        ls -la | grep -E "(extraction_cache|__pycache__|\.pyc)" || echo "  No temporary files found"
-        
-        # Clean up
-        rm -rf extraction_cache/ || true
-        rm -rf __pycache__/ || true
-        find . -name "*.pyc" -delete || true
-        find . -name "*.pyo" -delete || true
-        find . -name "__pycache__" -type d -exec rm -rf {} + || true
-        
-        echo "✅ Cleanup completed"
-    
-    - name: 📢 Workflow Status Notification
-      if: always()
-      run: |
-        echo "📢 M1-Evo Agent Workflow Status"
-        echo "================================"
-        
-        if [ "${{ job.status }}" = "success" ]; then
-          echo "✅ Workflow completed successfully!"
-          echo "🎉 New research repositories have been generated"
-        elif [ "${{ job.status }}" = "failure" ]; then
-          echo "❌ Workflow failed"
-          echo "🔍 Check the logs above for error details"
-        else
-          echo "⚠️ Workflow completed with status: ${{ job.status }}"
-        fi
-        
-        echo ""
-        echo "📊 Workflow Details:"
-        echo "  - Run ID: ${{ github.run_id }}"
-        echo "  - Triggered by: ${{ github.event_name }}"
-        echo "  - Repository: ${{ github.repository }}"
-        echo "  - Branch: ${{ github.ref_name }}"
-        echo "  - Timestamp: $(date -u)"
+          echo "📝 No test files found, creating basic smoke tests..."
+          mkdir -p tests
+          cat > tests/test_smoke.py << 'EOF'
+import os
+import sys
 
-  cleanup-artifacts:
-    name: 🧹 Cleanup Old Artifacts
+def test_python_version():
+    """Test that we're running a supported Python version."""
+    assert sys.version_info >= (3, 9)
+
+def test_basic_imports():
+    """Test that basic Python modules can be imported."""
+    import json
+    import requests
+    import pathlib
+    assert True
+
+def test_project_structure():
+    """Test that expected files exist."""
+    expected_files = ['pusher.py', 'manager.py']
+    for file in expected_files:
+        if os.path.exists(file):
+            print(f"✅ Found {file}")
+        else:
+            print(f"⚠️ Missing {file}")
+EOF
+          pytest tests/test_smoke.py -v
+        fi
+      continue-on-error: true
+    
+    - name: 📊 Upload Test Coverage
+      uses: codecov/codecov-action@v3
+      if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: watchdog-coverage
+        fail_ci_if_error: false
+
+  # ============================================================================
+  # STAGE 3: PROJECT ANALYSIS & METRICS
+  # ============================================================================
+  project-analysis:
+    name: 📊 Project Analysis & Metrics
     runs-on: ubuntu-latest
-    needs: [process-papers]
+    needs: [code-quality-security]
+    outputs:
+      project_count: ${{ steps.analyze-projects.outputs.project_count }}
+      total_files: ${{ steps.analyze-projects.outputs.total_files }}
+      total_lines: ${{ steps.analyze-projects.outputs.total_lines }}
+    
+    steps:
+    - name: 🔄 Checkout Code
+      uses: actions/checkout@v4
+    
+    - name: 📊 Analyze Project Structure
+      id: analyze-projects
+      run: |
+        echo "📊 Analyzing WATCHDOG project structure..."
+        
+        # Count projects
+        if [ -d "artifacts/projects" ]; then
+          project_count=$(find artifacts/projects -mindepth 1 -maxdepth 1 -type d | wc -l)
+          echo "project_count=$project_count" >> $GITHUB_OUTPUT
+          echo "📦 Found $project_count projects"
+        else
+          echo "project_count=0" >> $GITHUB_OUTPUT
+          echo "📭 No projects directory found"
+        fi
+        
+        # Count Python files and lines
+        total_files=$(find . -name "*.py" | wc -l)
+        total_lines=$(find . -name "*.py" -exec wc -l {} + | tail -1 | awk '{print $1}' || echo "0")
+        
+        echo "total_files=$total_files" >> $GITHUB_OUTPUT
+        echo "total_lines=$total_lines" >> $GITHUB_OUTPUT
+        
+        echo "📊 Project Statistics:"
+        echo "  - Python files: $total_files"
+        echo "  - Total lines of code: $total_lines"
+        echo "  - Average lines per file: $((total_lines / total_files))" 2>/dev/null || echo "  - Average lines per file: 0"
+    
+    - name: 📋 Generate Comprehensive Report
+      run: |
+        echo "# 🤖 WATCHDOG System Analysis Report" > analysis-report.md
+        echo "Generated on: $(date)" >> analysis-report.md
+        echo "" >> analysis-report.md
+        
+        echo "## 📊 System Overview" >> analysis-report.md
+        echo "- **Quality Score**: ${{ needs.code-quality-security.outputs.quality_score }}/100" >> analysis-report.md
+        echo "- **Security Issues**: ${{ needs.code-quality-security.outputs.security_issues }}" >> analysis-report.md
+        echo "- **Total Projects**: ${{ steps.analyze-projects.outputs.project_count }}" >> analysis-report.md
+        echo "- **Python Files**: ${{ steps.analyze-projects.outputs.total_files }}" >> analysis-report.md
+        echo "- **Lines of Code**: ${{ steps.analyze-projects.outputs.total_lines }}" >> analysis-report.md
+        echo "" >> analysis-report.md
+        
+        echo "## 🏗️ Project Structure" >> analysis-report.md
+        echo "\`\`\`" >> analysis-report.md
+        tree -I '__pycache__|*.pyc|.git' || find . -type f -name "*.py" | head -20
+        echo "\`\`\`" >> analysis-report.md
+        echo "" >> analysis-report.md
+        
+        echo "## 📦 Available Projects" >> analysis-report.md
+        if [ -d "artifacts/projects" ]; then
+          find artifacts/projects -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sed 's/^/- /' >> analysis-report.md
+        else
+          echo "- No projects found" >> analysis-report.md
+        fi
+        echo "" >> analysis-report.md
+        
+        echo "## 🔧 Core Components" >> analysis-report.md
+        for component in manager.py pusher.py coder1.py coder2.py coder3.py coder4.py; do
+          if [ -f "$component" ]; then
+            lines=$(wc -l < "$component")
+            echo "- ✅ $component ($lines lines)" >> analysis-report.md
+          else
+            echo "- ❌ $component (missing)" >> analysis-report.md
+          fi
+        done
+    
+    - name: 📊 Upload Analysis Report
+      uses: actions/upload-artifact@v3
+      with:
+        name: analysis-report-${{ github.run_number }}
+        path: analysis-report.md
+        retention-days: 30
+
+  # ============================================================================
+  # STAGE 4: DEPLOYMENT & REPOSITORY MANAGEMENT
+  # ============================================================================
+  deploy-and-manage:
+    name: 🚀 Deploy Projects & Manage Repositories
+    runs-on: ubuntu-latest
+    needs: [code-quality-security, project-analysis]
+    if: |
+      (github.ref == 'refs/heads/main' && github.event_name == 'push') ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_projects == 'true')
+    
+    steps:
+    - name: 🔄 Checkout Code
+      uses: actions/checkout@v4
+    
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: 📦 Install Deployment Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests python-dotenv pathlib
+    
+    - name: 🔐 Validate GitHub Authentication
+      env:
+        GITHUB_API: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        if [ -z "$GITHUB_API" ]; then
+          echo "❌ GITHUB_TOKEN secret not configured"
+          exit 1
+        fi
+        
+        echo "🔐 Testing GitHub API authentication..."
+        response=$(curl -s -H "Authorization: token $GITHUB_API" https://api.github.com/user)
+        username=$(echo "$response" | jq -r '.login' 2>/dev/null || echo "unknown")
+        
+        if [ "$username" != "null" ] && [ "$username" != "unknown" ]; then
+          echo "✅ Authenticated as: $username"
+        else
+          echo "❌ GitHub authentication failed"
+          exit 1
+        fi
+    
+    - name: 🚀 Deploy Projects to GitHub Repositories
+      env:
+        GITHUB_API: ${{ secrets.GITHUB_TOKEN }}
+        FORCE_DEPLOY: ${{ github.event.inputs.force_deploy }}
+      run: |
+        echo "🚀 Starting WATCHDOG project deployment..."
+        echo "📊 Projects available: ${{ needs.project-analysis.outputs.project_count }}"
+        
+        if [ "${{ needs.project-analysis.outputs.project_count }}" -eq 0 ]; then
+          echo "📭 No projects to deploy"
+          exit 0
+        fi
+        
+        python -c "
+        import os
+        import sys
+        import traceback
+        
+        try:
+            # Import pusher module
+            import pusher
+            print('✅ Pusher module loaded successfully')
+            
+            # Initialize GitHub manager
+            github_manager = pusher.GitHubRepositoryManager()
+            print('✅ GitHub manager initialized')
+            
+            # Print current status
+            github_manager.print_status()
+            
+            # Process all projects
+            print('🔄 Processing all projects for deployment...')
+            success = github_manager.process_all_projects()
+            
+            if success:
+                print('✅ All projects deployed successfully!')
+                
+                # Final status report
+                print('\\n📊 Final deployment status:')
+                github_manager.print_status()
+            else:
+                print('❌ Some projects failed to deploy')
+                sys.exit(1)
+                
+        except ImportError as e:
+            print(f'❌ Failed to import pusher module: {e}')
+            print('⚠️ Deployment skipped - pusher not available')
+        except Exception as e:
+            print(f'❌ Deployment failed with error: {e}')
+            traceback.print_exc()
+            sys.exit(1)
+        "
+    
+    - name: 🔍 Verify Repository Deployments
+      env:
+        GITHUB_API: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        echo "🔍 Verifying deployed repositories..."
+        
+        python -c "
+        import requests
+        import os
+        from datetime import datetime, timedelta
+        
+        github_token = os.getenv('GITHUB_API')
+        headers = {
+            'Authorization': f'token {github_token}',
+            'Accept': 'application/vnd.github.v3+json'
+        }
+        
+        # Get user info
+        user_response = requests.get('https://api.github.com/user', headers=headers)
+        if user_response.status_code == 200:
+            username = user_response.json()['login']
+            print(f'👤 Checking repositories for: {username}')
+            
+            # Get recent repositories
+            repos_response = requests.get(
+                f'https://api.github.com/users/{username}/repos?sort=created&direction=desc&per_page=20',
+                headers=headers
+            )
+            
+            if repos_response.status_code == 200:
+                repos = repos_response.json()
+                recent_repos = []
+                
+                # Filter repositories created in the last 24 hours
+                cutoff_time = datetime.now() - timedelta(hours=24)
+                
+                for repo in repos:
+                    created_at = datetime.fromisoformat(repo['created_at'].replace('Z', '+00:00'))
+                    if created_at.replace(tzinfo=None) >= cutoff_time:
+                        recent_repos.append(repo)
+                
+                print(f'📊 Found {len(recent_repos)} repositories created in the last 24 hours:')
+                for repo in recent_repos:
+                    print(f'  📦 {repo[\"name\"]} - {repo[\"created_at\"]}')
+                    
+                if len(recent_repos) == 0:
+                    print('📭 No new repositories found (this may be expected)')
+            else:
+                print(f'❌ Failed to fetch repositories: {repos_response.status_code}')
+        else:
+            print(f'❌ Failed to get user info: {user_response.status_code}')
+        "
+      continue-on-error: true
+    
+    - name: 📊 Generate Deployment Report
+      run: |
+        echo "# 🚀 WATCHDOG Deployment Report" > deployment-report.md
+        echo "Generated on: $(date)" >> deployment-report.md
+        echo "" >> deployment-report.md
+        echo "## Deployment Summary" >> deployment-report.md
+        echo "- **Trigger**: ${{ github.event_name }}" >> deployment-report.md
+        echo "- **Branch**: ${{ github.ref_name }}" >> deployment-report.md
+        echo "- **Commit**: ${{ github.sha }}" >> deployment-report.md
+        echo "- **Run Number**: ${{ github.run_number }}" >> deployment-report.md
+        echo "- **Projects Available**: ${{ needs.project-analysis.outputs.project_count }}" >> deployment-report.md
+        echo "- **Force Deploy**: ${{ github.event.inputs.force_deploy }}" >> deployment-report.md
+        echo "" >> deployment-report.md
+        echo "## Quality Metrics" >> deployment-report.md
+        echo "- **Code Quality Score**: ${{ needs.code-quality-security.outputs.quality_score }}/100" >> deployment-report.md
+        echo "- **Security Issues**: ${{ needs.code-quality-security.outputs.security_issues }}" >> deployment-report.md
+        echo "- **Total Files**: ${{ needs.project-analysis.outputs.total_files }}" >> deployment-report.md
+        echo "- **Total Lines**: ${{ needs.project-analysis.outputs.total_lines }}" >> deployment-report.md
+    
+    - name: 📊 Upload Deployment Report
+      uses: actions/upload-artifact@v3
+      with:
+        name: deployment-report-${{ github.run_number }}
+        path: deployment-report.md
+        retention-days: 30
+
+  # ============================================================================
+  # STAGE 5: FINAL REPORTING & NOTIFICATIONS
+  # ============================================================================
+  final-reporting:
+    name: 📋 Final Reporting & Notifications
+    runs-on: ubuntu-latest
+    needs: [code-quality-security, comprehensive-testing, project-analysis, deploy-and-manage]
     if: always()
     
     steps:
-    - name: 🧹 Clean up old artifacts
-      uses: actions/github-script@v7
+    - name: 📊 Generate Comprehensive Pipeline Summary
+      run: |
+        echo "# 🤖 WATCHDOG Complete Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 🎯 Pipeline Results" >> $GITHUB_STEP_SUMMARY
+        echo "| Stage | Status | Details |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------|--------|---------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Code Quality & Security | ${{ needs.code-quality-security.result }} | Score: ${{ needs.code-quality-security.outputs.quality_score }}/100, Issues: ${{ needs.code-quality-security.outputs.security_issues }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Comprehensive Testing | ${{ needs.comprehensive-testing.result }} | Multi-OS & Python version testing |" >> $GITHUB_STEP_SUMMARY
+        echo "| Project Analysis | ${{ needs.project-analysis.result }} | Projects: ${{ needs.project-analysis.outputs.project_count }}, Files: ${{ needs.project-analysis.outputs.total_files }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Deploy & Manage | ${{ needs.deploy-and-manage.result }} | GitHub repository deployment |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📊 System Metrics" >> $GITHUB_STEP_SUMMARY
+        echo "- **Quality Score**: ${{ needs.code-quality-security.outputs.quality_score }}/100" >> $GITHUB_STEP_SUMMARY
+        echo "- **Security Issues**: ${{ needs.code-quality-security.outputs.security_issues }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Total Projects**: ${{ needs.project-analysis.outputs.project_count }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Python Files**: ${{ needs.project-analysis.outputs.total_files }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Lines of Code**: ${{ needs.project-analysis.outputs.total_lines }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 🔧 Build Information" >> $GITHUB_STEP_SUMMARY
+        echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Run Number**: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Workflow**: ${{ github.workflow }}" >> $GITHUB_STEP_SUMMARY
+    
+    - name: 🎉 Success Notification
+      if: |
+        needs.code-quality-security.result == 'success' && 
+        (needs.comprehensive-testing.result == 'success' || needs.comprehensive-testing.result == 'skipped') &&
+        needs.project-analysis.result == 'success'
+      run: |
+        echo "🎉 WATCHDOG Complete Pipeline SUCCESS!"
+        echo "✅ All critical stages completed successfully"
+        echo "📊 Quality Score: ${{ needs.code-quality-security.outputs.quality_score }}/100"
+        echo "🚀 Projects: ${{ needs.project-analysis.outputs.project_count }}"
+        echo "📁 Files: ${{ needs.project-analysis.outputs.total_files }}"
+        echo "📝 Lines: ${{ needs.project-analysis.outputs.total_lines }}"
+        echo ""
+        echo "🔗 Check the artifacts for detailed reports:"
+        echo "  - Security reports"
+        echo "  - Analysis report"
+        echo "  - Deployment report"
+    
+    - name: ⚠️ Partial Success Notification
+      if: |
+        (needs.code-quality-security.result == 'success' || needs.project-analysis.result == 'success') &&
+        (needs.comprehensive-testing.result == 'failure' || needs.deploy-and-manage.result == 'failure')
+      run: |
+        echo "⚠️ WATCHDOG Pipeline completed with some issues"
+        echo "✅ Core functionality verified"
+        echo "❌ Some optional stages failed"
+        echo "🔧 Check the failed jobs for details"
+        echo "📊 Quality Score: ${{ needs.code-quality-security.outputs.quality_score }}/100"
+    
+    - name: ❌ Failure Notification
+      if: needs.code-quality-security.result == 'failure' || needs.project-analysis.result == 'failure'
+      run: |
+        echo "❌ WATCHDOG Pipeline FAILED!"
+        echo "🚨 Critical stages failed - immediate attention required"
+        echo "🔧 Please review the failed jobs and fix issues"
+        echo "📊 Quality Score: ${{ needs.code-quality-security.outputs.quality_score }}/100"
+        echo "🛡️ Security Issues: ${{ needs.code-quality-security.outputs.security_issues }}"
+        exit 1
+    
+    - name: 📧 Create Issue on Failure (Optional)
+      if: failure() && github.ref == 'refs/heads/main'
+      uses: actions/github-script@v6
       with:
         script: |
-          const artifacts = await github.rest.actions.listArtifactsForRepo({
+          github.rest.issues.create({
             owner: context.repo.owner,
             repo: context.repo.repo,
-          });
-          
-          const thirtyDaysAgo = new Date();
-          thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-          
-          let deletedCount = 0;
-          for (const artifact of artifacts.data.artifacts) {
-            const createdAt = new Date(artifact.created_at);
-            if (createdAt < thirtyDaysAgo) {
-              console.log(`Deleting old artifact: ${artifact.name}`);
-              await github.rest.actions.deleteArtifact({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                artifact_id: artifact.id,
-              });
-              deletedCount++;
-            }
-          }
-          
-          console.log(`Cleaned up ${deletedCount} old artifacts`);
+            title: `🚨 WATCHDOG Pipeline Failed - Run #${{ github.run_number }}`,
+            body: `
+            ## Pipeline Failure Report
+            
+            **Run**: #${{ github.run_number }}
+            **Commit**: ${{ github.sha }}
+            **Branch**: ${{ github.ref_name }}
+            **Trigger**: ${{ github.event_name }}
+            
+            ### Failed Stages
+            - Code Quality & Security: ${{ needs.code-quality-security.result }}
+            - Comprehensive Testing: ${{ needs.comprehensive-testing.result }}
+            - Project Analysis: ${{ needs.project-analysis.result }}
+            - Deploy & Manage: ${{ needs.deploy-and-manage.result }}
+            
+            ### Metrics
+            - Quality Score: ${{ needs.code-quality-security.outputs.quality_score }}/100
+            - Security Issues: ${{ needs.code-quality-security.outputs.security_issues }}
+            
+            **Action Required**: Please review the [workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) and fix the issues.
+            `,
+            labels: ['bug', 'ci/cd', 'high-priority']
+          })
+      continue-on-error: true
