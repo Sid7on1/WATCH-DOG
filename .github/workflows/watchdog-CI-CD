@@ -72,11 +72,17 @@ jobs:
         python-version: ${{ env.PYTHON_VERSION }}
         cache: 'pip'
     
-    - name: 📦 Install Scraping Dependencies
+    - name: 📦 Install WATCHDOG Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests python-dotenv pathlib lxml beautifulsoup4
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        # Install comprehensive requirements
+        if [ -f requirements.txt ]; then 
+          pip install -r requirements.txt
+        else
+          # Fallback essential dependencies for scraping
+          pip install requests python-dotenv lxml beautifulsoup4 arxiv urllib3
+        fi
+        echo "✅ Dependencies installed for scraping stage"
     
     - name: 🔐 Configure API Keys
       env:
@@ -192,8 +198,14 @@ jobs:
     - name: 📦 Install PDF Processing Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install PyPDF2 pdfplumber pathlib
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        # Install comprehensive requirements
+        if [ -f requirements.txt ]; then 
+          pip install -r requirements.txt
+        else
+          # Fallback essential dependencies for PDF processing
+          pip install PyPDF2 pdfplumber pathlib
+        fi
+        echo "✅ Dependencies installed for PDF extraction stage"
     
     - name: 📄 Extract Text from PDFs
       id: extract-text
@@ -284,8 +296,14 @@ jobs:
     - name: 📦 Install Selection Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests python-dotenv pathlib google-generativeai cohere groq
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        # Install comprehensive requirements
+        if [ -f requirements.txt ]; then 
+          pip install -r requirements.txt
+        else
+          # Fallback essential dependencies for AI selection
+          pip install requests python-dotenv google-generativeai cohere groq
+        fi
+        echo "✅ Dependencies installed for selection stage"
     
     - name: 🔐 Configure AI API Keys
       env:
@@ -392,8 +410,14 @@ jobs:
     - name: 📦 Install Planning Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests python-dotenv pathlib google-generativeai cohere groq
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        # Install comprehensive requirements
+        if [ -f requirements.txt ]; then 
+          pip install -r requirements.txt
+        else
+          # Fallback essential dependencies for planning
+          pip install requests python-dotenv google-generativeai cohere groq
+        fi
+        echo "✅ Dependencies installed for planning stage"
     
     - name: 🔐 Configure Planning API Keys
       env:
@@ -502,8 +526,14 @@ jobs:
     - name: 📦 Install Coding Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests python-dotenv pathlib google-generativeai cohere groq threading queue
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        # Install comprehensive requirements
+        if [ -f requirements.txt ]; then 
+          pip install -r requirements.txt
+        else
+          # Fallback essential dependencies for coding (threading/queue are built-in)
+          pip install requests python-dotenv google-generativeai cohere groq
+        fi
+        echo "✅ Dependencies installed for coding stage"
     
     - name: 🔐 Configure Coding API Keys
       env:
@@ -610,8 +640,14 @@ jobs:
     - name: 📦 Install Deployment Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests python-dotenv pathlib base64 shutil tempfile
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        # Install comprehensive requirements
+        if [ -f requirements.txt ]; then 
+          pip install -r requirements.txt
+        else
+          # Fallback essential dependencies for deployment (base64/shutil/tempfile are built-in)
+          pip install requests python-dotenv
+        fi
+        echo "✅ Dependencies installed for deployment stage"
     
     - name: 🔐 Configure GitHub API
       env:
