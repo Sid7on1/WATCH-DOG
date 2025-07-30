@@ -845,15 +845,16 @@ class GitHubRepositoryManager:
                         if self.upload_project_to_repository(project_path, repo_name):
                             processed_count += 1
                             print(f"✅ Successfully processed {project_name} -> {repo_name}")
-                            
-                            # Clean up local project directory after successful push
-                            self.cleanup_local_project(project_path, project_name)
                         else:
                             failed_count += 1
                             print(f"❌ Failed to upload files for {project_name}")
+                        
+                        # Don't clean up during deployment - cleanup happens at workflow end
+                        pass
                     else:
-                        failed_count += 1
-                        print(f"❌ Failed to create repository for {project_name}")
+                        # Repository already exists - count as processed but don't clean up yet
+                        print(f"⏭️ Repository for {project_name} already exists, skipping creation")
+                        processed_count += 1  # Count as processed since repo exists
                     
                     # Longer delay between projects to avoid rate limiting
                     time.sleep(2)
