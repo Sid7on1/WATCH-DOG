@@ -14,6 +14,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 import subprocess
 import sys
+from pusher import GitHubRepositoryManager
 
 # Load environment variables
 load_dotenv()
@@ -76,6 +77,9 @@ class ProjectManager:
         self.completed_tasks = []
         self.failed_tasks = []
         
+        # Initialize GitHub Repository Manager
+        self.github_manager = GitHubRepositoryManager(artifacts_dir=artifacts_dir)
+        
         # Ensure directories exist
         self.projects_dir.mkdir(parents=True, exist_ok=True)
         
@@ -84,6 +88,7 @@ class ProjectManager:
         print(f"📁 Projects directory: {self.projects_dir}")
         print(f"👥 Managing 4 specialized coding agents: {list(self.agents.keys())}")
         print(f"🔧 Features: Performance tracking, Health monitoring, Intelligent assignment, Auto-retry")
+        print(f"📚 GitHub integration ready with {len(self.github_manager.seen_titles)} seen titles")
     
     def load_project_plan(self, paper_name):
         """Load project plan from structures directory"""
@@ -787,6 +792,10 @@ class ProjectManager:
             
             # Wait between projects
             time.sleep(10)
+    
+    def process_all_project_plans(self):
+        """Alias for process_all_projects - used by workflow"""
+        return self.process_all_projects()
 
 
 def main():
