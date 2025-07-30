@@ -10,6 +10,7 @@ import json
 import time
 from pathlib import Path
 from dotenv import load_dotenv
+from pusher import GitHubRepositoryManager
 
 # Load environment variables
 load_dotenv()
@@ -19,6 +20,9 @@ class IntelligentProjectPlanner:
         self.artifacts_dir = Path(artifacts_dir)
         self.relevant_dir = self.artifacts_dir / "relevant"
         self.structures_dir = self.artifacts_dir / "structures"
+        
+        # Initialize GitHub Repository Manager
+        self.github_manager = GitHubRepositoryManager(artifacts_dir=artifacts_dir)
         
         # Enhanced API key validation and management
         self.validate_api_keys()
@@ -934,3 +938,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
