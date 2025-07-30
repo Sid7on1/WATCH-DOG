@@ -681,9 +681,9 @@ jobs:
                 'planner_result': '${{ needs.planner.result }}',
                 'manager_result': '${{ needs.manager.result }}',
                 'deployment_result': '${{ needs.github-deployment.result }}',
-                'papers_scraped': '${{ needs.scraper.outputs.papers_scraped || \"0\" }}',
-                'projects_created': '${{ needs.manager.outputs.projects_created || \"0\" }}',
-                'repos_created': '${{ needs.github-deployment.outputs.repos_created || \"0\" }}'
+                'papers_scraped': '${{ needs.scraper.outputs.papers_scraped || 0 }}',
+                'projects_created': '${{ needs.manager.outputs.projects_created || 0 }}',
+                'repos_created': '${{ needs.github-deployment.outputs.repos_created || 0 }}'
             })
             
             # End workflow with cleanup and logging
