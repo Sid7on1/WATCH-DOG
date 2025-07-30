@@ -31,51 +31,11 @@ jobs:
         cohere_API: ${{ secrets.COHERE_API }}
         groq_API: ${{ secrets.GROQ_API }}
         HF_API: ${{ secrets.HF_API }}
-        GITHUB_API: ${{ secrets.GITHUB_API }}
+        GITHUB_API: ${{ secrets.API_GITHUB }}
       run: |
         echo "Environment variables configured from GitHub secrets"
         echo "Setting up environment for IST timezone"
         
-    - name: Run workflow orchestrator
-      env:
-        OPEN_API: ${{ secrets.OPEN_API }}
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        cohere_API: ${{ secrets.COHERE_API }}
-        groq_API: ${{ secrets.GROQ_API }}
-        HF_API: ${{ secrets.HF_API }}
-        GITHUB_API: ${{ secrets.GITHUB_API }}
-      run: python workflow_orchestrator.py
-      
-    - name: Run project tracker
-      env:
-        OPEN_API: ${{ secrets.OPEN_API }}
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        cohere_API: ${{ secrets.COHERE_API }}
-        groq_API: ${{ secrets.GROQ_API }}
-        HF_API: ${{ secrets.HF_API }}
-        GITHUB_API: ${{ secrets.GITHUB_API }}
-      run: python project_tracker.py
-      
-    - name: Run manager
-      env:
-        OPEN_API: ${{ secrets.OPEN_API }}
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        cohere_API: ${{ secrets.COHERE_API }}
-        groq_API: ${{ secrets.GROQ_API }}
-        HF_API: ${{ secrets.HF_API }}
-        GITHUB_API: ${{ secrets.GITHUB_API }}
-      run: python manager.py
-      
-    - name: Run planner
-      env:
-        OPEN_API: ${{ secrets.OPEN_API }}
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        cohere_API: ${{ secrets.COHERE_API }}
-        groq_API: ${{ secrets.GROQ_API }}
-        HF_API: ${{ secrets.HF_API }}
-        GITHUB_API: ${{ secrets.GITHUB_API }}
-      run: python planner.py
-      
     - name: Run scraper
       env:
         OPEN_API: ${{ secrets.OPEN_API }}
@@ -83,7 +43,7 @@ jobs:
         cohere_API: ${{ secrets.COHERE_API }}
         groq_API: ${{ secrets.GROQ_API }}
         HF_API: ${{ secrets.HF_API }}
-        GITHUB_API: ${{ secrets.GITHUB_API }}
+        GITHUB_API: ${{ secrets.API_GITHUB }}
       run: python scraper.py
       
     - name: Run extractor
@@ -93,43 +53,29 @@ jobs:
         cohere_API: ${{ secrets.COHERE_API }}
         groq_API: ${{ secrets.GROQ_API }}
         HF_API: ${{ secrets.HF_API }}
-        GITHUB_API: ${{ secrets.GITHUB_API }}
+        GITHUB_API: ${{ secrets.API_GITHUB }}
       run: python extractor.py
       
-    - name: Run selector
+    - name: Run planner
       env:
         OPEN_API: ${{ secrets.OPEN_API }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         cohere_API: ${{ secrets.COHERE_API }}
         groq_API: ${{ secrets.GROQ_API }}
         HF_API: ${{ secrets.HF_API }}
-        GITHUB_API: ${{ secrets.GITHUB_API }}
-      run: python selector.py
+        GITHUB_API: ${{ secrets.API_GITHUB }}
+      run: python planner.py
       
-    - name: Run status checker
+    - name: Run manager (runs 4 coders automatically)
       env:
         OPEN_API: ${{ secrets.OPEN_API }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         cohere_API: ${{ secrets.COHERE_API }}
         groq_API: ${{ secrets.GROQ_API }}
         HF_API: ${{ secrets.HF_API }}
-        GITHUB_API: ${{ secrets.GITHUB_API }}
-      run: python status_checker.py
-      
-    - name: Run coders
-      env:
-        OPEN_API: ${{ secrets.OPEN_API }}
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        cohere_API: ${{ secrets.COHERE_API }}
-        groq_API: ${{ secrets.GROQ_API }}
-        HF_API: ${{ secrets.HF_API }}
-        GITHUB_API: ${{ secrets.GITHUB_API }}
-      run: |
-        python coder1.py
-        python coder2.py
-        python coder3.py
-        python coder4.py
-        
+        GITHUB_API: ${{ secrets.API_GITHUB }}
+      run: python manager.py
+
     - name: Run pusher
       env:
         OPEN_API: ${{ secrets.OPEN_API }}
@@ -137,7 +83,7 @@ jobs:
         cohere_API: ${{ secrets.COHERE_API }}
         groq_API: ${{ secrets.GROQ_API }}
         HF_API: ${{ secrets.HF_API }}
-        GITHUB_API: ${{ secrets.GITHUB_API }}
+        GITHUB_API: ${{ secrets.API_GITHUB }}
       run: python pusher.py
       
     - name: Upload logs (optional)
