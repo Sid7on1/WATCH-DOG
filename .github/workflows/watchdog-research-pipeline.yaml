@@ -1,826 +1,151 @@
-name: 🔬 WATCHDOG Full Research Pipeline
+name: Daily Automation Pipeline
 
 on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
   schedule:
-    # Daily research pipeline at 1:20 AM India time (19:50 UTC)
-    - cron: '50 19 * * *'
-  workflow_dispatch:
-    inputs:
-      max_papers_per_domain:
-        description: 'Maximum papers to scrape per domain'
-        required: false
-        default: '5'
-        type: string
-      skip_scraping:
-        description: 'Skip paper scraping (use existing PDFs)'
-        required: false
-        default: false
-        type: boolean
-      skip_extraction:
-        description: 'Skip PDF text extraction'
-        required: false
-        default: false
-        type: boolean
-      skip_selection:
-        description: 'Skip relevance selection'
-        required: false
-        default: false
-        type: boolean
-      skip_planning:
-        description: 'Skip project planning'
-        required: false
-        default: false
-        type: boolean
-      skip_coding:
-        description: 'Skip code generation'
-        required: false
-        default: false
-        type: boolean
-      force_deploy:
-        description: 'Force deployment to GitHub'
-        required: false
-        default: true
-        type: boolean
-
-env:
-  PYTHON_VERSION: '3.11'
-  MAX_PAPERS_PER_DOMAIN: ${{ github.event.inputs.max_papers_per_domain || '5' }}
+    # Runs daily at 1:30 AM IST (which is 8:00 PM UTC the previous day)
+    - cron: '0 20 * * *'
+  workflow_dispatch: # Allows manual triggering
 
 jobs:
-  # ============================================================================
-  # STAGE 1: SCRAPER
-  # ============================================================================
-  scraper:
-    name: 📚 scraper.py - ArXiv Paper Scraping
+  run-daily-automation:
     runs-on: ubuntu-latest
-    if: github.event.inputs.skip_scraping != true
-    outputs:
-      papers_scraped: ${{ steps.scrape-papers.outputs.papers_count }}
-      scraping_success: ${{ steps.scrape-papers.outputs.success }}
     
     steps:
-    - name: 🔄 Checkout Code
+    - name: Checkout repository
       uses: actions/checkout@v4
-    
-    - name: 🐍 Set up Python
+      
+    - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: ${{ env.PYTHON_VERSION }}
-        cache: 'pip'
-    
-    - name: 📦 Install WATCHDOG Dependencies
+        python-version: '3.9'
+        
+    - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # Install comprehensive requirements
-        if [ -f requirements.txt ]; then 
-          pip install -r requirements.txt
-        else
-          # Fallback essential dependencies for scraping
-          pip install requests python-dotenv lxml beautifulsoup4 arxiv urllib3
-        fi
-        echo "✅ Dependencies installed for scraping stage"
-    
-    - name: 🔐 Configure API Keys
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        
+    - name: Set up environment variables
       env:
-        API_GITHUB: ${{ secrets.API_GITHUB }}
         OPEN_API: ${{ secrets.OPEN_API }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        COHERE_API: ${{ secrets.COHERE_API }}
-        GROQ_API: ${{ secrets.GROQ_API }}
+        cohere_API: ${{ secrets.COHERE_API }}
+        groq_API: ${{ secrets.GROQ_API }}
         HF_API: ${{ secrets.HF_API }}
+        GITHUB_API: ${{ secrets.GITHUB_API }}
       run: |
-        echo "🔑 Configuring API keys for WATCHDOG system..."
-        echo "GITHUB_PAT=$API_GITHUB" >> .env
-        echo "GITHUB_API=$API_GITHUB" >> .env
-        echo "OPEN_API=$OPEN_API" >> .env
-        echo "GEMINI_API_KEY=$GEMINI_API_KEY" >> .env
-        echo "gemini_API=$GEMINI_API_KEY" >> .env
-        echo "cohere_API=$COHERE_API" >> .env
-        echo "groq_API=$GROQ_API" >> .env
-        echo "HF_API=$HF_API" >> .env
-        echo "✅ Environment configured with all API keys"
-    
-    - name: 📚 Run ArXiv Paper Scraper
-      id: scrape-papers
-      run: |
-        echo "🔍 Starting ArXiv paper scraping..."
-        echo "📊 Max papers per domain: ${{ env.MAX_PAPERS_PER_DOMAIN }}"
+        echo "Environment variables configured from GitHub secrets"
+        echo "Setting up environment for IST timezone"
         
-        # Run scraper directly
-        python scraper.py
-        
-        # Get results for GitHub output
-        if [ -f "artifacts/scraping_summary.txt" ]; then
-          papers_count=$(grep -o "Total papers found: [0-9]*" artifacts/scraping_summary.txt | grep -o "[0-9]*" || echo "0")
-          echo "papers_count=$papers_count" >> $GITHUB_OUTPUT
-          echo "success=true" >> $GITHUB_OUTPUT
-          if [ "$papers_count" -eq "0" ]; then
-            echo "✅ Paper scraping completed - no new papers found (all papers already processed)"
-          else
-            echo "✅ Paper scraping completed successfully - found $papers_count new papers!"
-          fi
-        else
-          # Check if scraper completed successfully even without summary file
-          if [ -f "artifacts/metadata.txt" ] || [ -d "artifacts/pdfs" ]; then
-            echo "papers_count=0" >> $GITHUB_OUTPUT
-            echo "success=true" >> $GITHUB_OUTPUT
-            echo "✅ Paper scraping completed - no new papers found (summary file cleaned up)"
-          else
-            echo "papers_count=0" >> $GITHUB_OUTPUT
-            echo "success=false" >> $GITHUB_OUTPUT
-            echo "❌ Scraping failed - no artifacts found"
-            exit 1
-          fi
-        fi
-    
-    - name: 📊 Upload Scraping Artifacts
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: scraped-papers-${{ github.run_number }}
-        path: |
-          artifacts/pdfs/
-          artifacts/metadata.txt
-          artifacts/scraping_summary.txt
-        retention-days: 7
-
-  # ============================================================================
-  # STAGE 2: EXTRACTOR
-  # ============================================================================
-  extractor:
-    name: 📄 extractor.py - PDF Text Extraction
-    runs-on: ubuntu-latest
-    needs: scraper
-    if: |
-      always() && 
-      (needs.scraper.result == 'success' || github.event.inputs.skip_scraping == true) &&
-      github.event.inputs.skip_extraction != true
-    outputs:
-      chunks_created: ${{ steps.extract-text.outputs.chunks_count }}
-      extraction_success: ${{ steps.extract-text.outputs.success }}
-    
-    steps:
-    - name: 🔄 Checkout Code
-      uses: actions/checkout@v4
-    
-    - name: 📥 Download Scraped Papers
-      if: needs.scraper.result == 'success'
-      uses: actions/download-artifact@v4
-      with:
-        name: scraped-papers-${{ github.run_number }}
-        path: ./
-    
-    - name: 🐍 Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-        cache: 'pip'
-    
-    - name: 📦 Install PDF Processing Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        # Install comprehensive requirements
-        if [ -f requirements.txt ]; then 
-          pip install -r requirements.txt
-        else
-          # Fallback essential dependencies for PDF processing
-          pip install PyPDF2 pdfplumber pathlib
-        fi
-        echo "✅ Dependencies installed for PDF extraction stage"
-    
-    - name: 📄 Extract Text from PDFs
-      id: extract-text
-      run: |
-        echo "📄 Starting PDF text extraction..."
-        
-        # Run extractor directly
-        python extractor.py
-        
-        # Count created chunks for output
-        if [ -d "artifacts/pdf-txts" ]; then
-          chunk_count=$(find artifacts/pdf-txts -name "chunk_*.txt" | wc -l)
-          echo "chunks_count=$chunk_count" >> $GITHUB_OUTPUT
-          echo "success=true" >> $GITHUB_OUTPUT
-          echo "✅ Text extraction completed successfully!"
-        else
-          echo "chunks_count=0" >> $GITHUB_OUTPUT
-          echo "success=false" >> $GITHUB_OUTPUT
-          echo "❌ Text extraction failed - no chunks directory found"
-          exit 1
-        fi
-    
-    - name: 📊 Upload Text Extraction Artifacts
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: extracted-texts-${{ github.run_number }}
-        path: |
-          artifacts/pdf-txts/
-        retention-days: 7
-
-  # ============================================================================
-  # STAGE 3: SELECTOR
-  # ============================================================================
-  selector:
-    name: 🎯 selector.py - Intelligent Relevance Selection
-    runs-on: ubuntu-latest
-    needs: [scraper, extractor]
-    if: |
-      always() && 
-      (needs.extractor.result == 'success' || github.event.inputs.skip_extraction == true) &&
-      github.event.inputs.skip_selection != true
-    outputs:
-      relevant_papers: ${{ steps.select-relevant.outputs.relevant_count }}
-      selection_success: ${{ steps.select-relevant.outputs.success }}
-    
-    steps:
-    - name: 🔄 Checkout Code
-      uses: actions/checkout@v4
-    
-    - name: 📥 Download Extracted Texts
-      if: needs.extractor.result == 'success'
-      uses: actions/download-artifact@v4
-      with:
-        name: extracted-texts-${{ github.run_number }}
-        path: ./
-    
-    - name: 🐍 Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-        cache: 'pip'
-    
-    - name: 📦 Install Selection Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        # Install comprehensive requirements
-        if [ -f requirements.txt ]; then 
-          pip install -r requirements.txt
-        else
-          # Fallback essential dependencies for AI selection
-          pip install requests python-dotenv google-generativeai cohere groq
-        fi
-        echo "✅ Dependencies installed for selection stage"
-    
-    - name: 🔐 Configure AI API Keys
+    - name: Run workflow orchestrator
       env:
-        API_GITHUB: ${{ secrets.API_GITHUB }}
         OPEN_API: ${{ secrets.OPEN_API }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        COHERE_API: ${{ secrets.COHERE_API }}
-        GROQ_API: ${{ secrets.GROQ_API }}
+        cohere_API: ${{ secrets.COHERE_API }}
+        groq_API: ${{ secrets.GROQ_API }}
         HF_API: ${{ secrets.HF_API }}
-      run: |
-        echo "🔑 Configuring AI API keys..."
-        echo "GITHUB_PAT=$API_GITHUB" >> .env
-        echo "GITHUB_API=$API_GITHUB" >> .env
-        echo "OPEN_API=$OPEN_API" >> .env
-        echo "gemini_API=$GEMINI_API_KEY" >> .env
-        echo "cohere_API=$COHERE_API" >> .env
-        echo "groq_API=$GROQ_API" >> .env
-        echo "HF_API=$HF_API" >> .env
-        echo "✅ AI APIs configured"
-    
-    - name: 🎯 Run Intelligent PDF Selector
-      id: select-relevant
-      run: |
-        echo "🎯 Starting intelligent relevance selection..."
-        
-        # Run selector directly
-        python selector.py
-        
-        # Count relevant papers for output
-        if [ -d "artifacts/relevant" ]; then
-          relevant_count=$(find artifacts/relevant -mindepth 1 -maxdepth 1 -type d | wc -l)
-          echo "relevant_count=$relevant_count" >> $GITHUB_OUTPUT
-          echo "success=true" >> $GITHUB_OUTPUT
-          echo "✅ Relevance selection completed successfully!"
-        else
-          echo "relevant_count=0" >> $GITHUB_OUTPUT
-          echo "success=false" >> $GITHUB_OUTPUT
-          echo "❌ Relevance selection failed - no relevant directory found"
-          exit 1
-        fi
-    
-    - name: 📊 Upload Selection Artifacts
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: relevant-papers-${{ github.run_number }}
-        path: |
-          artifacts/relevant/
-        retention-days: 7
-
-  # ============================================================================
-  # STAGE 4: PLANNER
-  # ============================================================================
-  planner:
-    name: 📋 planner.py - Intelligent Project Planning
-    runs-on: ubuntu-latest
-    needs: [scraper, extractor, selector]
-    if: |
-      always() && 
-      (needs.selector.result == 'success' || github.event.inputs.skip_selection == true) &&
-      github.event.inputs.skip_planning != true
-    outputs:
-      plans_created: ${{ steps.create-plans.outputs.plans_count }}
-      planning_success: ${{ steps.create-plans.outputs.success }}
-    
-    steps:
-    - name: 🔄 Checkout Code
-      uses: actions/checkout@v4
-    
-    - name: 📥 Download Relevant Papers
-      if: needs.selector.result == 'success'
-      uses: actions/download-artifact@v4
-      with:
-        name: relevant-papers-${{ github.run_number }}
-        path: ./
-    
-    - name: 🐍 Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-        cache: 'pip'
-    
-    - name: 📦 Install Planning Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        # Install comprehensive requirements
-        if [ -f requirements.txt ]; then 
-          pip install -r requirements.txt
-        else
-          # Fallback essential dependencies for planning
-          pip install requests python-dotenv google-generativeai cohere groq
-        fi
-        echo "✅ Dependencies installed for planning stage"
-    
-    - name: 🔐 Configure Planning API Keys
+        GITHUB_API: ${{ secrets.GITHUB_API }}
+      run: python workflow_orchestrator.py
+      
+    - name: Run project tracker
       env:
-        API_GITHUB: ${{ secrets.API_GITHUB }}
         OPEN_API: ${{ secrets.OPEN_API }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        COHERE_API: ${{ secrets.COHERE_API }}
-        GROQ_API: ${{ secrets.GROQ_API }}
+        cohere_API: ${{ secrets.COHERE_API }}
+        groq_API: ${{ secrets.GROQ_API }}
         HF_API: ${{ secrets.HF_API }}
-      run: |
-        echo "🔑 Configuring planning API keys..."
-        echo "GITHUB_PAT=$API_GITHUB" >> .env
-        echo "GITHUB_API=$API_GITHUB" >> .env
-        echo "OPEN_API=$OPEN_API" >> .env
-        echo "gemini_API=$GEMINI_API_KEY" >> .env
-        echo "cohere_API=$COHERE_API" >> .env
-        echo "groq_API=$GROQ_API" >> .env
-        echo "HF_API=$HF_API" >> .env
-        echo "✅ Planning APIs configured"
-    
-    - name: 📋 Run Intelligent Project Planner
-      id: create-plans
-      run: |
-        echo "📋 Starting intelligent project planning..."
-        
-        # Run planner directly
-        python planner.py
-        
-        # Count created plans for output
-        if [ -d "artifacts/structures" ]; then
-          plans_count=$(find artifacts/structures -name "plan.json" | wc -l)
-          echo "plans_count=$plans_count" >> $GITHUB_OUTPUT
-          echo "success=true" >> $GITHUB_OUTPUT
-          echo "✅ Project planning completed successfully!"
-        else
-          echo "plans_count=0" >> $GITHUB_OUTPUT
-          echo "success=false" >> $GITHUB_OUTPUT
-          echo "❌ Project planning failed - no structures directory found"
-          exit 1
-        fi
-    
-    - name: 📊 Upload Planning Artifacts
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: project-plans-${{ github.run_number }}
-        path: |
-          artifacts/structures/
-        retention-days: 7
-
-  # ============================================================================
-  # STAGE 5: MANAGER + CODERS (Multi-Agent Code Generation)
-  # ============================================================================
-  manager:
-    name: 👥 manager.py + coder1.py + coder2.py + coder3.py + coder4.py
-    runs-on: ubuntu-latest
-    needs: [scraper, extractor, selector, planner]
-    if: |
-      always() && 
-      (needs.planner.result == 'success' || github.event.inputs.skip_planning == true) &&
-      github.event.inputs.skip_coding != true
-    outputs:
-      projects_created: ${{ steps.generate-code.outputs.projects_count }}
-      coding_success: ${{ steps.generate-code.outputs.success }}
-    
-    steps:
-    - name: 🔄 Checkout Code
-      uses: actions/checkout@v4
-    
-    - name: 📥 Download Project Plans
-      if: needs.planner.result == 'success'
-      uses: actions/download-artifact@v4
-      with:
-        name: project-plans-${{ github.run_number }}
-        path: ./
-    
-    - name: 🐍 Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-        cache: 'pip'
-    
-    - name: 📦 Install Coding Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        # Install comprehensive requirements
-        if [ -f requirements.txt ]; then 
-          pip install -r requirements.txt
-        else
-          # Fallback essential dependencies for coding (threading/queue are built-in)
-          pip install requests python-dotenv google-generativeai cohere groq
-        fi
-        echo "✅ Dependencies installed for coding stage"
-    
-    - name: 🔐 Configure Coding API Keys
+        GITHUB_API: ${{ secrets.GITHUB_API }}
+      run: python project_tracker.py
+      
+    - name: Run manager
       env:
-        API_GITHUB: ${{ secrets.API_GITHUB }}
         OPEN_API: ${{ secrets.OPEN_API }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        COHERE_API: ${{ secrets.COHERE_API }}
-        GROQ_API: ${{ secrets.GROQ_API }}
+        cohere_API: ${{ secrets.COHERE_API }}
+        groq_API: ${{ secrets.GROQ_API }}
         HF_API: ${{ secrets.HF_API }}
+        GITHUB_API: ${{ secrets.GITHUB_API }}
+      run: python manager.py
+      
+    - name: Run planner
+      env:
+        OPEN_API: ${{ secrets.OPEN_API }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        cohere_API: ${{ secrets.COHERE_API }}
+        groq_API: ${{ secrets.GROQ_API }}
+        HF_API: ${{ secrets.HF_API }}
+        GITHUB_API: ${{ secrets.GITHUB_API }}
+      run: python planner.py
+      
+    - name: Run scraper
+      env:
+        OPEN_API: ${{ secrets.OPEN_API }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        cohere_API: ${{ secrets.COHERE_API }}
+        groq_API: ${{ secrets.GROQ_API }}
+        HF_API: ${{ secrets.HF_API }}
+        GITHUB_API: ${{ secrets.GITHUB_API }}
+      run: python scraper.py
+      
+    - name: Run extractor
+      env:
+        OPEN_API: ${{ secrets.OPEN_API }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        cohere_API: ${{ secrets.COHERE_API }}
+        groq_API: ${{ secrets.GROQ_API }}
+        HF_API: ${{ secrets.HF_API }}
+        GITHUB_API: ${{ secrets.GITHUB_API }}
+      run: python extractor.py
+      
+    - name: Run selector
+      env:
+        OPEN_API: ${{ secrets.OPEN_API }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        cohere_API: ${{ secrets.COHERE_API }}
+        groq_API: ${{ secrets.GROQ_API }}
+        HF_API: ${{ secrets.HF_API }}
+        GITHUB_API: ${{ secrets.GITHUB_API }}
+      run: python selector.py
+      
+    - name: Run status checker
+      env:
+        OPEN_API: ${{ secrets.OPEN_API }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        cohere_API: ${{ secrets.COHERE_API }}
+        groq_API: ${{ secrets.GROQ_API }}
+        HF_API: ${{ secrets.HF_API }}
+        GITHUB_API: ${{ secrets.GITHUB_API }}
+      run: python status_checker.py
+      
+    - name: Run coders
+      env:
+        OPEN_API: ${{ secrets.OPEN_API }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        cohere_API: ${{ secrets.COHERE_API }}
+        groq_API: ${{ secrets.GROQ_API }}
+        HF_API: ${{ secrets.HF_API }}
+        GITHUB_API: ${{ secrets.GITHUB_API }}
       run: |
-        echo "🔑 Configuring coding API keys..."
-        echo "GITHUB_PAT=$API_GITHUB" >> .env
-        echo "GITHUB_API=$API_GITHUB" >> .env
-        echo "OPEN_API=$OPEN_API" >> .env
-        echo "gemini_API=$GEMINI_API_KEY" >> .env
-        echo "cohere_API=$COHERE_API" >> .env
-        echo "groq_API=$GROQ_API" >> .env
-        echo "HF_API=$HF_API" >> .env
-        echo "✅ Coding APIs configured"
-    
-    - name: 👥 Run Multi-Agent Project Manager
-      id: generate-code
-      run: |
-        echo "👥 Starting multi-agent code generation..."
+        python coder1.py
+        python coder2.py
+        python coder3.py
+        python coder4.py
         
-        # Run manager directly
-        python manager.py
-        
-        # Count created projects for output
-        if [ -d "artifacts/projects" ]; then
-          projects_count=$(find artifacts/projects -mindepth 1 -maxdepth 1 -type d | wc -l)
-          echo "projects_count=$projects_count" >> $GITHUB_OUTPUT
-          echo "success=true" >> $GITHUB_OUTPUT
-          echo "✅ Code generation completed successfully!"
-        else
-          echo "projects_count=0" >> $GITHUB_OUTPUT
-          echo "success=false" >> $GITHUB_OUTPUT
-          echo "❌ Code generation failed - no projects directory found"
-          exit 1
-        fi
-    
-    - name: 📊 Upload Generated Projects
-      uses: actions/upload-artifact@v4
+    - name: Run pusher
+      env:
+        OPEN_API: ${{ secrets.OPEN_API }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        cohere_API: ${{ secrets.COHERE_API }}
+        groq_API: ${{ secrets.GROQ_API }}
+        HF_API: ${{ secrets.HF_API }}
+        GITHUB_API: ${{ secrets.GITHUB_API }}
+      run: python pusher.py
+      
+    - name: Upload logs (optional)
+      uses: actions/upload-artifact@v3
       if: always()
       with:
-        name: generated-projects-${{ github.run_number }}
+        name: automation-logs
         path: |
-          artifacts/projects/
-        retention-days: 30
-
-  # ============================================================================
-  # STAGE 6: GITHUB DEPLOYMENT
-  # ============================================================================
-  github-deployment:
-    name: 🚀 GitHub Repository Deployment
-    runs-on: ubuntu-latest
-    needs: [scraper, extractor, selector, planner, manager]
-    if: |
-      always() && 
-      (needs.manager.result == 'success' || github.event.inputs.skip_coding == true) &&
-      github.event.inputs.force_deploy != false
-    outputs:
-      repos_created: ${{ steps.deploy-repos.outputs.repos_count }}
-      deployment_success: ${{ steps.deploy-repos.outputs.success }}
-    
-    steps:
-    - name: 🔄 Checkout Code
-      uses: actions/checkout@v4
-    
-    - name: 📥 Download Generated Projects
-      if: needs.manager.result == 'success'
-      uses: actions/download-artifact@v4
-      with:
-        name: generated-projects-${{ github.run_number }}
-        path: ./
-    
-    - name: 🐍 Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-        cache: 'pip'
-    
-    - name: 📦 Install Deployment Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        # Install comprehensive requirements
-        if [ -f requirements.txt ]; then 
-          pip install -r requirements.txt
-        else
-          # Fallback essential dependencies for deployment (base64/shutil/tempfile are built-in)
-          pip install requests python-dotenv
-        fi
-        echo "✅ Dependencies installed for deployment stage"
-    
-    - name: 🔐 Configure GitHub API
-      env:
-        API_GITHUB: ${{ secrets.API_GITHUB }}
-      run: |
-        echo "🔑 Configuring GitHub API..."
-        echo "GITHUB_PAT=$API_GITHUB" >> .env
-        echo "GITHUB_API=$API_GITHUB" >> .env
-        echo "✅ GitHub API configured"
-    
-    - name: 🚀 Deploy Projects to GitHub Repositories
-      id: deploy-repos
-      run: |
-        echo "🚀 Starting GitHub repository deployment..."
-        
-        # Create a simple deployment script
-        cat > deploy_projects.py << 'EOF'
-import sys
-from pathlib import Path
-sys.path.append('.')
-from pusher import GitHubRepositoryManager
-
-try:
-    github_manager = GitHubRepositoryManager()
-    print('✅ GitHub repository manager initialized')
-    
-    success = github_manager.process_all_projects()
-    
-    if success:
-        print('✅ All projects deployed to GitHub successfully!')
-        projects_dir = Path('artifacts/projects')
-        repos_count = 0
-        if projects_dir.exists():
-            repos_count = len([d for d in projects_dir.iterdir() if d.is_dir()])
-        print(f'repos_count={repos_count}')
-        print('success=true')
-    else:
-        print('❌ Some projects failed to deploy')
-        print('repos_count=0')
-        print('success=false')
-        sys.exit(1)
-        
-except Exception as e:
-    print(f'❌ GitHub deployment failed: {e}')
-    print('repos_count=0')
-    print('success=false')
-    sys.exit(1)
-EOF
-        
-        # Run the deployment script
-        python deploy_projects.py > deployment_output.txt 2>&1
-        
-        # Parse output for GitHub Actions
-        repos_count=$(grep "repos_count=" deployment_output.txt | cut -d'=' -f2 || echo "0")
-        success=$(grep "success=" deployment_output.txt | cut -d'=' -f2 || echo "false")
-        
-        echo "repos_count=$repos_count" >> $GITHUB_OUTPUT
-        echo "success=$success" >> $GITHUB_OUTPUT
-        
-        # Show the output
-        cat deployment_output.txt
-        
-        if [ "$success" = "true" ]; then
-          echo "✅ GitHub deployment completed successfully!"
-        else
-          echo "❌ GitHub deployment failed"
-          exit 1
-        fi
-    
-    - name: 🔍 Verify Repository Deployments
-      run: |
-        echo "🔍 Verifying deployed repositories..."
-        echo "✅ Deployment verification completed (check pusher.py logs for details)"
-      continue-on-error: true
-
-  # ============================================================================
-  # STAGE 7: FINAL CLEANUP & LOGGING
-  # ============================================================================
-  final-cleanup:
-    name: 🧹 Final Cleanup & Logging
-    runs-on: ubuntu-latest
-    needs: [scraper, extractor, selector, planner, manager, github-deployment]
-    if: always()
-    
-    steps:
-    - name: 🔄 Checkout Code
-      uses: actions/checkout@v4
-    
-    - name: 🐍 Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-        cache: 'pip'
-    
-    - name: 📦 Install Cleanup Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        if [ -f requirements.txt ]; then 
-          pip install -r requirements.txt
-        else
-          pip install requests python-dotenv
-        fi
-        echo "✅ Dependencies installed for cleanup stage"
-    
-    - name: 🔐 Configure GitHub API
-      env:
-        API_GITHUB: ${{ secrets.API_GITHUB }}
-      run: |
-        echo "🔑 Configuring GitHub API..."
-        echo "GITHUB_PAT=$API_GITHUB" >> .env
-        echo "GITHUB_API=$API_GITHUB" >> .env
-        echo "✅ GitHub API configured"
-    
-    - name: 🧹 Run Final Cleanup and Logging
-      run: |
-        echo "🧹 Starting final cleanup and logging..."
-        
-        # Create a simple cleanup script
-        cat > final_cleanup.py << 'EOF'
-import sys
-sys.path.append('.')
-from pusher import GitHubRepositoryManager
-
-try:
-    github_manager = GitHubRepositoryManager()
-    print('✅ GitHub repository manager initialized for cleanup')
-    
-    # Start workflow logging
-    github_manager.workflow_start()
-    
-    # Log workflow completion
-    github_manager.log_activity('workflow', 'WATCHDOG pipeline completed', 'success', {
-        'scraper_result': '${{ needs.scraper.result }}',
-        'extractor_result': '${{ needs.extractor.result }}',
-        'selector_result': '${{ needs.selector.result }}',
-        'planner_result': '${{ needs.planner.result }}',
-        'manager_result': '${{ needs.manager.result }}',
-        'deployment_result': '${{ needs.github-deployment.result }}',
-        'papers_scraped': '${{ needs.scraper.outputs.papers_scraped || 0 }}',
-        'projects_created': '${{ needs.manager.outputs.projects_created || 0 }}',
-        'repos_created': '${{ needs.github-deployment.outputs.repos_created || 0 }}'
-    })
-    
-    # End workflow with cleanup and logging
-    github_manager.workflow_end()
-    
-    print('✅ Final cleanup and logging completed successfully!')
-        
-except Exception as e:
-    print(f'❌ Final cleanup failed: {e}')
-    # Don't exit with error - cleanup failure shouldn't fail the whole workflow
-EOF
-        
-        # Run the cleanup script
-        python final_cleanup.py
-        
-        echo "✅ Final cleanup and logging completed!"
-
-  # ============================================================================
-  # STAGE 8: FINAL REPORTING & SUMMARY
-  # ============================================================================
-  final-summary:
-    name: 📊 Pipeline Summary & Reporting
-    runs-on: ubuntu-latest
-    needs: [scraper, extractor, selector, planner, manager, github-deployment]
-    if: always()
-    
-    steps:
-    - name: 📊 Generate Complete Pipeline Summary
-      run: |
-        echo "# 🔬 WATCHDOG Full Research Pipeline Summary" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## 🎯 Pipeline Results" >> $GITHUB_STEP_SUMMARY
-        echo "| Stage | Status | Output |" >> $GITHUB_STEP_SUMMARY
-        echo "|-------|--------|--------|" >> $GITHUB_STEP_SUMMARY
-        echo "| 📚 Paper Scraping | ${{ needs.scraper.result }} | ${{ needs.scraper.outputs.papers_scraped || '0' }} papers |" >> $GITHUB_STEP_SUMMARY
-        echo "| 📄 Text Extraction | ${{ needs.extractor.result }} | ${{ needs.extractor.outputs.chunks_created || '0' }} chunks |" >> $GITHUB_STEP_SUMMARY
-        echo "| 🎯 Relevance Selection | ${{ needs.selector.result }} | ${{ needs.selector.outputs.relevant_papers || '0' }} relevant |" >> $GITHUB_STEP_SUMMARY
-        echo "| 📋 Project Planning | ${{ needs.planner.result }} | ${{ needs.planner.outputs.plans_created || '0' }} plans |" >> $GITHUB_STEP_SUMMARY
-        echo "| 👥 Code Generation | ${{ needs.manager.result }} | ${{ needs.manager.outputs.projects_created || '0' }} projects |" >> $GITHUB_STEP_SUMMARY
-        echo "| 🚀 GitHub Deployment | ${{ needs.github-deployment.result }} | ${{ needs.github-deployment.outputs.repos_created || '0' }} repositories |" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## 📈 Research Metrics" >> $GITHUB_STEP_SUMMARY
-        echo "- **Papers Scraped**: ${{ needs.scraper.outputs.papers_scraped || '0' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Text Chunks**: ${{ needs.extractor.outputs.chunks_created || '0' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Relevant Papers**: ${{ needs.selector.outputs.relevant_papers || '0' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Project Plans**: ${{ needs.planner.outputs.plans_created || '0' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Generated Projects**: ${{ needs.manager.outputs.projects_created || '0' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **GitHub Repositories**: ${{ needs.github-deployment.outputs.repos_created || '0' }}" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## 🔧 Pipeline Information" >> $GITHUB_STEP_SUMMARY
-        echo "- **Trigger**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Run Number**: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Max Papers Per Domain**: ${{ env.MAX_PAPERS_PER_DOMAIN }}" >> $GITHUB_STEP_SUMMARY
-    
-    - name: 🎉 Success Notification
-      if: |
-        needs.scraper.result == 'success' && 
-        needs.extractor.result == 'success' &&
-        needs.selector.result == 'success' &&
-        needs.planner.result == 'success' &&
-        needs.manager.result == 'success'
-      run: |
-        echo "🎉 WATCHDOG RESEARCH PIPELINE SUCCESS!"
-        echo "✅ Complete end-to-end research pipeline executed successfully"
-        echo ""
-        echo "📊 FINAL RESULTS:"
-        echo "  📚 Papers Scraped: ${{ needs.scraper.outputs.papers_scraped || '0' }}"
-        echo "  📄 Text Chunks: ${{ needs.extractor.outputs.chunks_created || '0' }}"
-        echo "  🎯 Relevant Papers: ${{ needs.selector.outputs.relevant_papers || '0' }}"
-        echo "  📋 Project Plans: ${{ needs.planner.outputs.plans_created || '0' }}"
-        echo "  👥 Generated Projects: ${{ needs.manager.outputs.projects_created || '0' }}"
-        echo "  🚀 GitHub Repositories: ${{ needs.github-deployment.outputs.repos_created || '0' }}"
-        echo ""
-        echo "🔗 Check artifacts for detailed outputs from each stage"
-    
-    - name: ⚠️ Partial Success Notification
-      if: |
-        (needs.scraper.result == 'success' || needs.scraper.result == 'skipped') &&
-        (needs.extractor.result == 'failure' || needs.selector.result == 'failure' || 
-         needs.planner.result == 'failure' || needs.manager.result == 'failure')
-      run: |
-        echo "⚠️ WATCHDOG Pipeline completed with some issues"
-        echo "✅ Initial stages completed successfully"
-        echo "❌ Some downstream stages failed"
-        echo "🔧 Check the failed jobs for details"
-        echo ""
-        echo "📊 PARTIAL RESULTS:"
-        echo "  📚 Papers Scraped: ${{ needs.scraper.outputs.papers_scraped || '0' }}"
-        echo "  📄 Text Chunks: ${{ needs.extractor.outputs.chunks_created || '0' }}"
-        echo "  🎯 Relevant Papers: ${{ needs.selector.outputs.relevant_papers || '0' }}"
-    
-    - name: ❌ Failure Notification
-      if: needs.scraper.result == 'failure'
-      run: |
-        echo "❌ WATCHDOG RESEARCH PIPELINE FAILED!"
-        echo "🚨 Initial paper scraping failed - pipeline cannot continue"
-        echo "🔧 Please check the scraping job logs and fix issues"
-        echo "💡 Common issues: API rate limits, network connectivity, invalid domains"
-        exit 1
-    
-    - name: 📧 Create Issue on Critical Failure
-      if: failure() && github.ref == 'refs/heads/main'
-      uses: actions/github-script@v6
-      with:
-        script: |
-          github.rest.issues.create({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            title: `🚨 WATCHDOG Research Pipeline Failed - Run #${{ github.run_number }}`,
-            body: `
-            ## Research Pipeline Failure Report
-            
-            **Run**: #${{ github.run_number }}
-            **Commit**: ${{ github.sha }}
-            **Branch**: ${{ github.ref_name }}
-            **Trigger**: ${{ github.event_name }}
-            
-            ### Stage Results
-            - 📚 Paper Scraping: ${{ needs.paper-scraping.result }}
-            - 📄 Text Extraction: ${{ needs.text-extraction.result }}
-            - 🎯 Relevance Selection: ${{ needs.relevance-selection.result }}
-            - 📋 Project Planning: ${{ needs.project-planning.result }}
-            - 👥 Code Generation: ${{ needs.code-generation.result }}
-            - 🚀 GitHub Deployment: ${{ needs.github-deployment.result }}
-            
-            ### Outputs
-            - Papers Scraped: ${{ needs.paper-scraping.outputs.papers_scraped || '0' }}
-            - Text Chunks: ${{ needs.text-extraction.outputs.chunks_created || '0' }}
-            - Relevant Papers: ${{ needs.relevance-selection.outputs.relevant_papers || '0' }}
-            - Project Plans: ${{ needs.project-planning.outputs.plans_created || '0' }}
-            - Generated Projects: ${{ needs.code-generation.outputs.projects_created || '0' }}
-            - GitHub Repositories: ${{ needs.github-deployment.outputs.repos_created || '0' }}
-            
-            **Action Required**: Please review the [workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) and fix the issues.
-            `,
-            labels: ['bug', 'research-pipeline', 'high-priority']
-          })
-      continue-on-error: true
+          *.log
+          logs/
+        retention-days: 7
