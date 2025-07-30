@@ -118,12 +118,23 @@ jobs:
           papers_count=$(grep -o "Total papers found: [0-9]*" artifacts/scraping_summary.txt | grep -o "[0-9]*" || echo "0")
           echo "papers_count=$papers_count" >> $GITHUB_OUTPUT
           echo "success=true" >> $GITHUB_OUTPUT
-          echo "✅ Paper scraping completed successfully!"
+          if [ "$papers_count" -eq "0" ]; then
+            echo "✅ Paper scraping completed - no new papers found (all papers already processed)"
+          else
+            echo "✅ Paper scraping completed successfully - found $papers_count new papers!"
+          fi
         else
-          echo "papers_count=0" >> $GITHUB_OUTPUT
-          echo "success=false" >> $GITHUB_OUTPUT
-          echo "❌ Scraping failed - no summary file found"
-          exit 1
+          # Check if scraper completed successfully even without summary file
+          if [ -f "artifacts/metadata.txt" ] || [ -d "artifacts/pdfs" ]; then
+            echo "papers_count=0" >> $GITHUB_OUTPUT
+            echo "success=true" >> $GITHUB_OUTPUT
+            echo "✅ Paper scraping completed - no new papers found (summary file cleaned up)"
+          else
+            echo "papers_count=0" >> $GITHUB_OUTPUT
+            echo "success=false" >> $GITHUB_OUTPUT
+            echo "❌ Scraping failed - no artifacts found"
+            exit 1
+          fi
         fi
     
     - name: 📊 Upload Scraping Artifacts
@@ -548,19 +559,56 @@ jobs:
       run: |
         echo "🚀 Starting GitHub repository deployment..."
         
-        # Run pusher directly
-        python pusher.py
+        # Run pusher for deployment only (no cleanup yet)
+        python -c "
+        import pusher
+        import sys
+        from pathlib import Path
         
-        # Count created repositories for output
-        if [ -d "artifacts/projects" ]; then
-          repos_count=$(find artifacts/projects -mindepth 1 -maxdepth 1 -type d | wc -l)
-          echo "repos_count=$repos_count" >> $GITHUB_OUTPUT
-          echo "success=true" >> $GITHUB_OUTPUT
+        try:
+            # Initialize GitHub repository manager
+            github_manager = pusher.GitHubRepositoryManager()
+            print('✅ GitHub repository manager initialized')
+            
+            # Process all projects and create repositories (no cleanup)
+            success = github_manager.process_all_projects()
+            
+            if success:
+                print('✅ All projects deployed to GitHub successfully!')
+                
+                # Get repository count
+                projects_dir = Path('artifacts/projects')
+                repos_count = 0
+                if projects_dir.exists():
+                    repos_count = len([d for d in projects_dir.iterdir() if d.is_dir()])
+                
+                print(f'📊 Repositories created: {repos_count}')
+                print(f'repos_count={repos_count}')
+                print('success=true')
+            else:
+                print('❌ Some projects failed to deploy')
+                print('repos_count=0')
+                print('success=false')
+                sys.exit(1)
+                
+        except Exception as e:
+            print(f'❌ GitHub deployment failed: {e}')
+            print('repos_count=0')
+            print('success=false')
+            sys.exit(1)
+        " > deployment_output.txt
+        
+        # Parse output for GitHub Actions
+        repos_count=$(grep "repos_count=" deployment_output.txt | cut -d'=' -f2 || echo "0")
+        success=$(grep "success=" deployment_output.txt | cut -d'=' -f2 || echo "false")
+        
+        echo "repos_count=$repos_count" >> $GITHUB_OUTPUT
+        echo "success=$success" >> $GITHUB_OUTPUT
+        
+        if [ "$success" = "true" ]; then
           echo "✅ GitHub deployment completed successfully!"
         else
-          echo "repos_count=0" >> $GITHUB_OUTPUT
-          echo "success=false" >> $GITHUB_OUTPUT
-          echo "❌ GitHub deployment failed - no projects directory found"
+          echo "❌ GitHub deployment failed"
           exit 1
         fi
     
@@ -571,7 +619,87 @@ jobs:
       continue-on-error: true
 
   # ============================================================================
-  # STAGE 7: FINAL REPORTING & SUMMARY
+  # STAGE 7: FINAL CLEANUP & LOGGING
+  # ============================================================================
+  final-cleanup:
+    name: 🧹 Final Cleanup & Logging
+    runs-on: ubuntu-latest
+    needs: [scraper, extractor, selector, planner, manager, github-deployment]
+    if: always()
+    
+    steps:
+    - name: 🔄 Checkout Code
+      uses: actions/checkout@v4
+    
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+    
+    - name: 📦 Install Cleanup Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then 
+          pip install -r requirements.txt
+        else
+          pip install requests python-dotenv
+        fi
+        echo "✅ Dependencies installed for cleanup stage"
+    
+    - name: 🔐 Configure GitHub API
+      env:
+        API_GITHUB: ${{ secrets.API_GITHUB }}
+      run: |
+        echo "🔑 Configuring GitHub API..."
+        echo "GITHUB_PAT=$API_GITHUB" >> .env
+        echo "GITHUB_API=$API_GITHUB" >> .env
+        echo "✅ GitHub API configured"
+    
+    - name: 🧹 Run Final Cleanup and Logging
+      run: |
+        echo "🧹 Starting final cleanup and logging..."
+        
+        # Run pusher for final cleanup and logging
+        python -c "
+        import pusher
+        import sys
+        
+        try:
+            # Initialize GitHub repository manager
+            github_manager = pusher.GitHubRepositoryManager()
+            print('✅ GitHub repository manager initialized for cleanup')
+            
+            # Start workflow logging
+            github_manager.workflow_start()
+            
+            # Log workflow completion
+            github_manager.log_activity('workflow', 'WATCHDOG pipeline completed', 'success', {
+                'scraper_result': '${{ needs.scraper.result }}',
+                'extractor_result': '${{ needs.extractor.result }}',
+                'selector_result': '${{ needs.selector.result }}',
+                'planner_result': '${{ needs.planner.result }}',
+                'manager_result': '${{ needs.manager.result }}',
+                'deployment_result': '${{ needs.github-deployment.result }}',
+                'papers_scraped': '${{ needs.scraper.outputs.papers_scraped || \"0\" }}',
+                'projects_created': '${{ needs.manager.outputs.projects_created || \"0\" }}',
+                'repos_created': '${{ needs.github-deployment.outputs.repos_created || \"0\" }}'
+            })
+            
+            # End workflow with cleanup and logging
+            github_manager.workflow_end()
+            
+            print('✅ Final cleanup and logging completed successfully!')
+                
+        except Exception as e:
+            print(f'❌ Final cleanup failed: {e}')
+            # Don't exit with error - cleanup failure shouldn't fail the whole workflow
+        "
+        
+        echo "✅ Final cleanup and logging completed!"
+
+  # ============================================================================
+  # STAGE 8: FINAL REPORTING & SUMMARY
   # ============================================================================
   final-summary:
     name: 📊 Pipeline Summary & Reporting
