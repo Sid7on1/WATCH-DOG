@@ -559,44 +559,42 @@ jobs:
       run: |
         echo "🚀 Starting GitHub repository deployment..."
         
-        # Run pusher for deployment only (no cleanup yet)
-        python -c "
-        import pusher
-        import sys
-        from pathlib import Path
+        # Create a simple deployment script
+        cat > deploy_projects.py << 'EOF'
+import sys
+from pathlib import Path
+sys.path.append('.')
+from pusher import GitHubRepositoryManager
+
+try:
+    github_manager = GitHubRepositoryManager()
+    print('✅ GitHub repository manager initialized')
+    
+    success = github_manager.process_all_projects()
+    
+    if success:
+        print('✅ All projects deployed to GitHub successfully!')
+        projects_dir = Path('artifacts/projects')
+        repos_count = 0
+        if projects_dir.exists():
+            repos_count = len([d for d in projects_dir.iterdir() if d.is_dir()])
+        print(f'repos_count={repos_count}')
+        print('success=true')
+    else:
+        print('❌ Some projects failed to deploy')
+        print('repos_count=0')
+        print('success=false')
+        sys.exit(1)
         
-        try:
-            # Initialize GitHub repository manager
-            github_manager = pusher.GitHubRepositoryManager()
-            print('✅ GitHub repository manager initialized')
-            
-            # Process all projects and create repositories (no cleanup)
-            success = github_manager.process_all_projects()
-            
-            if success:
-                print('✅ All projects deployed to GitHub successfully!')
-                
-                # Get repository count
-                projects_dir = Path('artifacts/projects')
-                repos_count = 0
-                if projects_dir.exists():
-                    repos_count = len([d for d in projects_dir.iterdir() if d.is_dir()])
-                
-                print(f'📊 Repositories created: {repos_count}')
-                print(f'repos_count={repos_count}')
-                print('success=true')
-            else:
-                print('❌ Some projects failed to deploy')
-                print('repos_count=0')
-                print('success=false')
-                sys.exit(1)
-                
-        except Exception as e:
-            print(f'❌ GitHub deployment failed: {e}')
-            print('repos_count=0')
-            print('success=false')
-            sys.exit(1)
-        " > deployment_output.txt
+except Exception as e:
+    print(f'❌ GitHub deployment failed: {e}')
+    print('repos_count=0')
+    print('success=false')
+    sys.exit(1)
+EOF
+        
+        # Run the deployment script
+        python deploy_projects.py > deployment_output.txt 2>&1
         
         # Parse output for GitHub Actions
         repos_count=$(grep "repos_count=" deployment_output.txt | cut -d'=' -f2 || echo "0")
@@ -604,6 +602,9 @@ jobs:
         
         echo "repos_count=$repos_count" >> $GITHUB_OUTPUT
         echo "success=$success" >> $GITHUB_OUTPUT
+        
+        # Show the output
+        cat deployment_output.txt
         
         if [ "$success" = "true" ]; then
           echo "✅ GitHub deployment completed successfully!"
@@ -660,41 +661,44 @@ jobs:
       run: |
         echo "🧹 Starting final cleanup and logging..."
         
-        # Run pusher for final cleanup and logging
-        python -c "
-        import pusher
-        import sys
+        # Create a simple cleanup script
+        cat > final_cleanup.py << 'EOF'
+import sys
+sys.path.append('.')
+from pusher import GitHubRepositoryManager
+
+try:
+    github_manager = GitHubRepositoryManager()
+    print('✅ GitHub repository manager initialized for cleanup')
+    
+    # Start workflow logging
+    github_manager.workflow_start()
+    
+    # Log workflow completion
+    github_manager.log_activity('workflow', 'WATCHDOG pipeline completed', 'success', {
+        'scraper_result': '${{ needs.scraper.result }}',
+        'extractor_result': '${{ needs.extractor.result }}',
+        'selector_result': '${{ needs.selector.result }}',
+        'planner_result': '${{ needs.planner.result }}',
+        'manager_result': '${{ needs.manager.result }}',
+        'deployment_result': '${{ needs.github-deployment.result }}',
+        'papers_scraped': '${{ needs.scraper.outputs.papers_scraped || 0 }}',
+        'projects_created': '${{ needs.manager.outputs.projects_created || 0 }}',
+        'repos_created': '${{ needs.github-deployment.outputs.repos_created || 0 }}'
+    })
+    
+    # End workflow with cleanup and logging
+    github_manager.workflow_end()
+    
+    print('✅ Final cleanup and logging completed successfully!')
         
-        try:
-            # Initialize GitHub repository manager
-            github_manager = pusher.GitHubRepositoryManager()
-            print('✅ GitHub repository manager initialized for cleanup')
-            
-            # Start workflow logging
-            github_manager.workflow_start()
-            
-            # Log workflow completion
-            github_manager.log_activity('workflow', 'WATCHDOG pipeline completed', 'success', {
-                'scraper_result': '${{ needs.scraper.result }}',
-                'extractor_result': '${{ needs.extractor.result }}',
-                'selector_result': '${{ needs.selector.result }}',
-                'planner_result': '${{ needs.planner.result }}',
-                'manager_result': '${{ needs.manager.result }}',
-                'deployment_result': '${{ needs.github-deployment.result }}',
-                'papers_scraped': '${{ needs.scraper.outputs.papers_scraped || 0 }}',
-                'projects_created': '${{ needs.manager.outputs.projects_created || 0 }}',
-                'repos_created': '${{ needs.github-deployment.outputs.repos_created || 0 }}'
-            })
-            
-            # End workflow with cleanup and logging
-            github_manager.workflow_end()
-            
-            print('✅ Final cleanup and logging completed successfully!')
-                
-        except Exception as e:
-            print(f'❌ Final cleanup failed: {e}')
-            # Don't exit with error - cleanup failure shouldn't fail the whole workflow
-        "
+except Exception as e:
+    print(f'❌ Final cleanup failed: {e}')
+    # Don't exit with error - cleanup failure shouldn't fail the whole workflow
+EOF
+        
+        # Run the cleanup script
+        python final_cleanup.py
         
         echo "✅ Final cleanup and logging completed!"
 
