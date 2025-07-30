@@ -244,60 +244,117 @@ class ArxivScraper:
             f.write(f"TOTAL PAPERS PROCESSED: {total_papers}\n")
             f.write(f"{'='*60}\n")
     
-    def scrape_all_domains(self, max_results_per_domain=20, download_pdfs=True):
-        """Scrape papers from all configured domains"""
+    def scrape_domain_until_target(self, domain_name, categories, target_count, download_pdfs=True):
+        """Keep searching a domain until we find the target number of new papers"""
+        print(f"\n{'='*60}")
+        print(f"Processing domain: {domain_name}")
+        print(f"🎯 Target: {target_count} new papers")
+        print(f"{'='*60}")
+        
+        new_papers = []
+        new_titles = []
+        total_checked = 0
+        seen_count = 0
+        search_start = 0
+        batch_size = 20  # Search in batches of 20
+        max_total_search = 200  # Don't search more than 200 papers total
+        
+        while len(new_papers) < target_count and total_checked < max_total_search:
+            print(f"🔍 Searching batch starting from position {search_start}...")
+            
+            # Fetch next batch of papers
+            params = self.build_query(categories, batch_size)
+            params['start'] = search_start
+            
+            response = requests.get(self.base_url, params=params)
+            if response.status_code != 200:
+                print(f"❌ Error fetching papers for {domain_name}: {response.status_code}")
+                break
+            
+            # Parse XML response
+            root = ET.fromstring(response.content)
+            namespace = {'atom': 'http://www.w3.org/2005/Atom'}
+            entries = root.findall('atom:entry', namespace)
+            
+            if not entries:
+                print(f"📭 No more papers found in {domain_name}")
+                break
+            
+            # Process each paper individually
+            for entry in entries:
+                paper = self.parse_paper_entry(entry, namespace)
+                if not paper:
+                    continue
+                
+                total_checked += 1
+                
+                # Check if paper is already seen
+                if self.is_pdf_seen(paper['title']):
+                    print(f"⏭️  Paper {total_checked}: SEEN - {paper['title'][:50]}...")
+                    seen_count += 1
+                else:
+                    print(f"✨ Paper {total_checked}: NEW - {paper['title'][:50]}...")
+                    
+                    # Download immediately if requested
+                    if download_pdfs:
+                        if self.download_pdf(paper, domain_name):
+                            print(f"📥 Downloaded successfully")
+                        else:
+                            print(f"❌ Download failed")
+                        time.sleep(1)  # Be respectful to arXiv servers
+                    
+                    new_papers.append(paper)
+                    new_titles.append(paper['title'])
+                    
+                    print(f"📊 Progress: {len(new_papers)}/{target_count} new papers found")
+                    
+                    # Stop if we've reached our target
+                    if len(new_papers) >= target_count:
+                        break
+            
+            search_start += batch_size
+            time.sleep(2)  # Rate limiting between batches
+        
+        # Update seen titles in GitHub immediately after this domain
+        if new_titles:
+            print(f"📚 Adding {len(new_titles)} new titles to GitHub repository...")
+            self.add_new_titles(new_titles)
+            print(f"✅ Updated GitHub with new titles from {domain_name}")
+        
+        print(f"\n📊 Domain {domain_name} Summary:")
+        print(f"  🎯 Target: {target_count} new papers")
+        print(f"  ✅ Found: {len(new_papers)} new papers")
+        print(f"  ⏭️  Skipped: {seen_count} already seen papers")
+        print(f"  🔍 Total checked: {total_checked} papers")
+        
+        if len(new_papers) < target_count:
+            print(f"  ⚠️  Could only find {len(new_papers)}/{target_count} new papers in {domain_name}")
+        else:
+            print(f"  🎉 Successfully found all {target_count} new papers!")
+        
+        return new_papers
+
+    def scrape_all_domains(self, max_results_per_domain=5, download_pdfs=True):
+        """Scrape exactly the requested number of new papers from each domain"""
         print("Starting arXiv scraping for AI/ML domains...")
-        print(f"Artifacts will be saved to: {self.artifacts_dir.absolute()}")
+        print(f"🎯 Target: {max_results_per_domain} NEW papers per domain")
+        print(f"📁 Artifacts will be saved to: {self.artifacts_dir.absolute()}")
+        print(f"📚 Starting with {len(self.github_manager.seen_titles)} seen titles from GitHub")
         
         all_results = {}
         
         for domain_name, categories in self.domains.items():
-            print(f"\n{'='*60}")
-            print(f"Processing domain: {domain_name}")
-            print(f"{'='*60}")
+            # Scrape this domain until we get the target number of new papers
+            new_papers = self.scrape_domain_until_target(
+                domain_name, categories, max_results_per_domain, download_pdfs
+            )
             
-            # Fetch papers with adaptive search
-            papers = self.fetch_papers_adaptive(domain_name, categories, max_results_per_domain)
+            all_results[domain_name] = new_papers
             
-            if papers:
-                # Filter out already seen papers
-                new_papers = []
-                seen_count = 0
-                new_titles = []
-                
-                for paper in papers:
-                    if self.is_pdf_seen(paper['title']):
-                        print(f"⏭️  Skipping seen paper: {paper['title'][:60]}...")
-                        seen_count += 1
-                    else:
-                        new_papers.append(paper)
-                        new_titles.append(paper['title'])
-                
-                print(f"📊 Found {len(papers)} papers, {seen_count} already seen, {len(new_papers)} new")
-                
-                if new_papers:
-                    # Download new PDFs only
-                    if download_pdfs:
-                        successful_downloads = 0
-                        
-                        for paper in new_papers:
-                            if self.download_pdf(paper, domain_name):
-                                successful_downloads += 1
-                            time.sleep(1)  # Be respectful to arXiv servers
-                        
-                        print(f"Successfully downloaded {successful_downloads}/{len(new_papers)} new PDFs")
-                    
-                    # Add new titles to GitHub repository
-                    if new_titles:
-                        self.add_new_titles(new_titles)
-                    
-                    all_results[domain_name] = new_papers
-                else:
-                    print(f"🔄 No new papers found in {domain_name} - all papers already seen")
-                    all_results[domain_name] = []
-            
-            # Rate limiting
-            time.sleep(2)
+            # Wait 30 seconds before moving to next domain (as requested)
+            if domain_name != list(self.domains.keys())[-1]:  # Don't wait after last domain
+                print(f"⏳ Waiting 30 seconds before processing next domain...")
+                time.sleep(30)
         
         return all_results
     
