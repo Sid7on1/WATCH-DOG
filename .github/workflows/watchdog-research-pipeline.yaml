@@ -57,7 +57,7 @@ jobs:
   scraper:
     name: 📚 scraper.py - ArXiv Paper Scraping
     runs-on: ubuntu-latest
-    if: github.event.inputs.skip_scraping != 'true'
+    if: github.event.inputs.skip_scraping != true
     outputs:
       papers_scraped: ${{ steps.scrape-papers.outputs.papers_count }}
       scraping_success: ${{ steps.scrape-papers.outputs.success }}
@@ -157,8 +157,8 @@ jobs:
     needs: scraper
     if: |
       always() && 
-      (needs.scraper.result == 'success' || github.event.inputs.skip_scraping == 'true') &&
-      github.event.inputs.skip_extraction != 'true'
+      (needs.scraper.result == 'success' || github.event.inputs.skip_scraping == true) &&
+      github.event.inputs.skip_extraction != true
     outputs:
       chunks_created: ${{ steps.extract-text.outputs.chunks_count }}
       extraction_success: ${{ steps.extract-text.outputs.success }}
@@ -231,8 +231,8 @@ jobs:
     needs: [scraper, extractor]
     if: |
       always() && 
-      (needs.extractor.result == 'success' || github.event.inputs.skip_extraction == 'true') &&
-      github.event.inputs.skip_selection != 'true'
+      (needs.extractor.result == 'success' || github.event.inputs.skip_extraction == true) &&
+      github.event.inputs.skip_selection != true
     outputs:
       relevant_papers: ${{ steps.select-relevant.outputs.relevant_count }}
       selection_success: ${{ steps.select-relevant.outputs.success }}
@@ -324,8 +324,8 @@ jobs:
     needs: [scraper, extractor, selector]
     if: |
       always() && 
-      (needs.selector.result == 'success' || github.event.inputs.skip_selection == 'true') &&
-      github.event.inputs.skip_planning != 'true'
+      (needs.selector.result == 'success' || github.event.inputs.skip_selection == true) &&
+      github.event.inputs.skip_planning != true
     outputs:
       plans_created: ${{ steps.create-plans.outputs.plans_count }}
       planning_success: ${{ steps.create-plans.outputs.success }}
@@ -417,8 +417,8 @@ jobs:
     needs: [scraper, extractor, selector, planner]
     if: |
       always() && 
-      (needs.planner.result == 'success' || github.event.inputs.skip_planning == 'true') &&
-      github.event.inputs.skip_coding != 'true'
+      (needs.planner.result == 'success' || github.event.inputs.skip_planning == true) &&
+      github.event.inputs.skip_coding != true
     outputs:
       projects_created: ${{ steps.generate-code.outputs.projects_count }}
       coding_success: ${{ steps.generate-code.outputs.success }}
@@ -510,8 +510,8 @@ jobs:
     needs: [scraper, extractor, selector, planner, manager]
     if: |
       always() && 
-      (needs.manager.result == 'success' || github.event.inputs.skip_coding == 'true') &&
-      github.event.inputs.force_deploy == 'true'
+      (needs.manager.result == 'success' || github.event.inputs.skip_coding == true) &&
+      github.event.inputs.force_deploy != false
     outputs:
       repos_created: ${{ steps.deploy-repos.outputs.repos_count }}
       deployment_success: ${{ steps.deploy-repos.outputs.success }}
@@ -715,19 +715,19 @@ jobs:
         echo "## 🎯 Pipeline Results" >> $GITHUB_STEP_SUMMARY
         echo "| Stage | Status | Output |" >> $GITHUB_STEP_SUMMARY
         echo "|-------|--------|--------|" >> $GITHUB_STEP_SUMMARY
-        echo "| 📚 Paper Scraping | ${{ needs.paper-scraping.result }} | ${{ needs.paper-scraping.outputs.papers_scraped || '0' }} papers |" >> $GITHUB_STEP_SUMMARY
-        echo "| 📄 Text Extraction | ${{ needs.text-extraction.result }} | ${{ needs.text-extraction.outputs.chunks_created || '0' }} chunks |" >> $GITHUB_STEP_SUMMARY
-        echo "| 🎯 Relevance Selection | ${{ needs.relevance-selection.result }} | ${{ needs.relevance-selection.outputs.relevant_papers || '0' }} relevant |" >> $GITHUB_STEP_SUMMARY
-        echo "| 📋 Project Planning | ${{ needs.project-planning.result }} | ${{ needs.project-planning.outputs.plans_created || '0' }} plans |" >> $GITHUB_STEP_SUMMARY
-        echo "| 👥 Code Generation | ${{ needs.code-generation.result }} | ${{ needs.code-generation.outputs.projects_created || '0' }} projects |" >> $GITHUB_STEP_SUMMARY
+        echo "| 📚 Paper Scraping | ${{ needs.scraper.result }} | ${{ needs.scraper.outputs.papers_scraped || '0' }} papers |" >> $GITHUB_STEP_SUMMARY
+        echo "| 📄 Text Extraction | ${{ needs.extractor.result }} | ${{ needs.extractor.outputs.chunks_created || '0' }} chunks |" >> $GITHUB_STEP_SUMMARY
+        echo "| 🎯 Relevance Selection | ${{ needs.selector.result }} | ${{ needs.selector.outputs.relevant_papers || '0' }} relevant |" >> $GITHUB_STEP_SUMMARY
+        echo "| 📋 Project Planning | ${{ needs.planner.result }} | ${{ needs.planner.outputs.plans_created || '0' }} plans |" >> $GITHUB_STEP_SUMMARY
+        echo "| 👥 Code Generation | ${{ needs.manager.result }} | ${{ needs.manager.outputs.projects_created || '0' }} projects |" >> $GITHUB_STEP_SUMMARY
         echo "| 🚀 GitHub Deployment | ${{ needs.github-deployment.result }} | ${{ needs.github-deployment.outputs.repos_created || '0' }} repositories |" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "## 📈 Research Metrics" >> $GITHUB_STEP_SUMMARY
-        echo "- **Papers Scraped**: ${{ needs.paper-scraping.outputs.papers_scraped || '0' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Text Chunks**: ${{ needs.text-extraction.outputs.chunks_created || '0' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Relevant Papers**: ${{ needs.relevance-selection.outputs.relevant_papers || '0' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Project Plans**: ${{ needs.project-planning.outputs.plans_created || '0' }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Generated Projects**: ${{ needs.code-generation.outputs.projects_created || '0' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Papers Scraped**: ${{ needs.scraper.outputs.papers_scraped || '0' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Text Chunks**: ${{ needs.extractor.outputs.chunks_created || '0' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Relevant Papers**: ${{ needs.selector.outputs.relevant_papers || '0' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Project Plans**: ${{ needs.planner.outputs.plans_created || '0' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Generated Projects**: ${{ needs.manager.outputs.projects_created || '0' }}" >> $GITHUB_STEP_SUMMARY
         echo "- **GitHub Repositories**: ${{ needs.github-deployment.outputs.repos_created || '0' }}" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "## 🔧 Pipeline Information" >> $GITHUB_STEP_SUMMARY
@@ -738,30 +738,30 @@ jobs:
     
     - name: 🎉 Success Notification
       if: |
-        needs.paper-scraping.result == 'success' && 
-        needs.text-extraction.result == 'success' &&
-        needs.relevance-selection.result == 'success' &&
-        needs.project-planning.result == 'success' &&
-        needs.code-generation.result == 'success'
+        needs.scraper.result == 'success' && 
+        needs.extractor.result == 'success' &&
+        needs.selector.result == 'success' &&
+        needs.planner.result == 'success' &&
+        needs.manager.result == 'success'
       run: |
         echo "🎉 WATCHDOG RESEARCH PIPELINE SUCCESS!"
         echo "✅ Complete end-to-end research pipeline executed successfully"
         echo ""
         echo "📊 FINAL RESULTS:"
-        echo "  📚 Papers Scraped: ${{ needs.paper-scraping.outputs.papers_scraped || '0' }}"
-        echo "  📄 Text Chunks: ${{ needs.text-extraction.outputs.chunks_created || '0' }}"
-        echo "  🎯 Relevant Papers: ${{ needs.relevance-selection.outputs.relevant_papers || '0' }}"
-        echo "  📋 Project Plans: ${{ needs.project-planning.outputs.plans_created || '0' }}"
-        echo "  👥 Generated Projects: ${{ needs.code-generation.outputs.projects_created || '0' }}"
+        echo "  📚 Papers Scraped: ${{ needs.scraper.outputs.papers_scraped || '0' }}"
+        echo "  📄 Text Chunks: ${{ needs.extractor.outputs.chunks_created || '0' }}"
+        echo "  🎯 Relevant Papers: ${{ needs.selector.outputs.relevant_papers || '0' }}"
+        echo "  📋 Project Plans: ${{ needs.planner.outputs.plans_created || '0' }}"
+        echo "  👥 Generated Projects: ${{ needs.manager.outputs.projects_created || '0' }}"
         echo "  🚀 GitHub Repositories: ${{ needs.github-deployment.outputs.repos_created || '0' }}"
         echo ""
         echo "🔗 Check artifacts for detailed outputs from each stage"
     
     - name: ⚠️ Partial Success Notification
       if: |
-        (needs.paper-scraping.result == 'success' || needs.paper-scraping.result == 'skipped') &&
-        (needs.text-extraction.result == 'failure' || needs.relevance-selection.result == 'failure' || 
-         needs.project-planning.result == 'failure' || needs.code-generation.result == 'failure')
+        (needs.scraper.result == 'success' || needs.scraper.result == 'skipped') &&
+        (needs.extractor.result == 'failure' || needs.selector.result == 'failure' || 
+         needs.planner.result == 'failure' || needs.manager.result == 'failure')
       run: |
         echo "⚠️ WATCHDOG Pipeline completed with some issues"
         echo "✅ Initial stages completed successfully"
@@ -769,12 +769,12 @@ jobs:
         echo "🔧 Check the failed jobs for details"
         echo ""
         echo "📊 PARTIAL RESULTS:"
-        echo "  📚 Papers Scraped: ${{ needs.paper-scraping.outputs.papers_scraped || '0' }}"
-        echo "  📄 Text Chunks: ${{ needs.text-extraction.outputs.chunks_created || '0' }}"
-        echo "  🎯 Relevant Papers: ${{ needs.relevance-selection.outputs.relevant_papers || '0' }}"
+        echo "  📚 Papers Scraped: ${{ needs.scraper.outputs.papers_scraped || '0' }}"
+        echo "  📄 Text Chunks: ${{ needs.extractor.outputs.chunks_created || '0' }}"
+        echo "  🎯 Relevant Papers: ${{ needs.selector.outputs.relevant_papers || '0' }}"
     
     - name: ❌ Failure Notification
-      if: needs.paper-scraping.result == 'failure'
+      if: needs.scraper.result == 'failure'
       run: |
         echo "❌ WATCHDOG RESEARCH PIPELINE FAILED!"
         echo "🚨 Initial paper scraping failed - pipeline cannot continue"
