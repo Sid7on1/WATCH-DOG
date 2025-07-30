@@ -44,8 +44,7 @@ class ArxivScraper:
             "cs.HC": ["cs.HC"]
         }
         
-        # Initialize workflow - load seen titles from GitHub
-        self.github_manager.workflow_start()
+        # Initialize GitHub manager and load seen titles
         print(f"📚 Loaded {len(self.github_manager.seen_titles)} seen titles from GitHub")
     
     def is_pdf_seen(self, title):
@@ -344,10 +343,10 @@ def main():
         print(f"{'='*60}")
         
     finally:
-        # Always complete the workflow - save seen titles and sync to GitHub
-        print("\n🔄 Finalizing workflow - syncing to GitHub...")
-        scraper.github_manager.workflow_end()
-        print("✅ Workflow completed and synced to GitHub repository!")
+        # Save seen titles but don't clean up artifacts (YAML workflow handles cleanup)
+        print("\n🔄 Finalizing scraper - saving seen titles to GitHub...")
+        scraper.github_manager.save_seen_titles()
+        print("✅ Scraper completed and seen titles saved to GitHub!")
 
 
 if __name__ == "__main__":
