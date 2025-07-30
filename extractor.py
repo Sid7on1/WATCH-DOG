@@ -163,8 +163,63 @@ class PDFTextExtractor:
         
         return len(chunks)
     
+    def store_chunks_in_repo(self):
+        """Store all text chunks in the GitHub repository"""
+        try:
+            if not self.texts_dir.exists():
+                print("❌ No text chunks directory found")
+                return False
+            
+            print("📤 Uploading text chunks to GitHub repository...")
+            
+            # Get all text chunk files
+            chunk_files = list(self.texts_dir.rglob("*.txt"))
+            
+            if not chunk_files:
+                print("❌ No text chunk files found")
+                return False
+            
+            uploaded_count = 0
+            failed_count = 0
+            
+            # Upload each chunk file to the repository
+            for chunk_file in chunk_files:
+                # Calculate relative path for repository storage
+                relative_path = chunk_file.relative_to(self.artifacts_dir)
+                repo_path = f"artifacts/{relative_path.as_posix()}"
+                
+                # Upload the chunk file
+                if self.github_manager.upload_file_to_repo(chunk_file, repo_path):
+                    uploaded_count += 1
+                    print(f"  ✅ Uploaded: {relative_path}")
+                else:
+                    failed_count += 1
+                    print(f"  ❌ Failed: {relative_path}")
+                
+                # Small delay to avoid rate limiting
+                time.sleep(0.5)
+            
+            print(f"\n📊 Chunk upload summary:")
+            print(f"  ✅ Successfully uploaded: {uploaded_count}")
+            print(f"  ❌ Failed uploads: {failed_count}")
+            print(f"  📁 Total chunks processed: {len(chunk_files)}")
+            
+            # Log the activity
+            self.github_manager.log_activity(
+                "chunks", 
+                f"Uploaded {uploaded_count} text chunks to repository",
+                "success" if failed_count == 0 else "warning"
+            )
+            
+            return failed_count == 0
+            
+        except Exception as e:
+            print(f"❌ Error storing chunks in repository: {e}")
+            self.github_manager.log_activity("chunks", f"Failed to store chunks: {e}", "error")
+            return False
+    
     def process_all_pdfs(self):
-        """Process all PDFs in the artifacts/pdfs directory"""
+        """Process all PDFs in the artifacts/pdfs directory and store chunks in repo"""
         if not self.pdfs_dir.exists():
             print(f"PDFs directory not found: {self.pdfs_dir}")
             return
@@ -189,7 +244,7 @@ class PDFTextExtractor:
             extracted_text = self.extract_text_from_pdf(pdf_file)
             
             if extracted_text:
-                # Save text chunks
+                # Save text chunks locally
                 chunk_count = self.save_text_chunks(pdf_file.name, extracted_text)
                 total_chunks += chunk_count
                 processed_count += 1
@@ -203,6 +258,12 @@ class PDFTextExtractor:
         print(f"Total PDFs processed: {processed_count}/{len(pdf_files)}")
         print(f"Total text chunks created: {total_chunks}")
         print(f"Text files saved to: {self.texts_dir}")
+        
+        # Store all chunks in GitHub repository
+        if total_chunks > 0:
+            print("\n🔄 Storing text chunks in GitHub repository...")
+            self.store_chunks_in_repo()
+        
         print("=" * 60)
 
 
