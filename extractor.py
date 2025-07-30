@@ -7,6 +7,7 @@ Extracts text from PDFs and stores them in organized chunks
 import os
 from pathlib import Path
 import time
+from pusher import GitHubRepositoryManager
 
 try:
     import PyPDF2
@@ -28,12 +29,16 @@ class PDFTextExtractor:
         self.pdfs_dir = self.artifacts_dir / "pdfs"
         self.texts_dir = self.artifacts_dir / "pdf-txts"
         
+        # Initialize GitHub Repository Manager
+        self.github_manager = GitHubRepositoryManager(artifacts_dir=artifacts_dir)
+        
         # Ensure directories exist
         self.texts_dir.mkdir(parents=True, exist_ok=True)
         
         print(f"PDF Extractor initialized using {PDF_LIBRARY}")
         print(f"PDFs directory: {self.pdfs_dir}")
         print(f"Text output directory: {self.texts_dir}")
+        print(f"📚 GitHub integration ready with {len(self.github_manager.seen_titles)} seen titles")
     
     def extract_text_with_pypdf2(self, pdf_path):
         """Extract text using PyPDF2"""
