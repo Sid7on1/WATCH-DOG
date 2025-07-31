@@ -56,6 +56,16 @@ jobs:
         GITHUB_API: ${{ secrets.API_GITHUB }}
       run: python extractor.py
       
+      - name: Run selector
+      env:
+        OPEN_API: ${{ secrets.OPEN_API }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        cohere_API: ${{ secrets.COHERE_API }}
+        groq_API: ${{ secrets.GROQ_API }}
+        HF_API: ${{ secrets.HF_API }}
+        GITHUB_API: ${{ secrets.API_GITHUB }}
+      run: python selector.py
+      
     - name: Run planner
       env:
         OPEN_API: ${{ secrets.OPEN_API }}
