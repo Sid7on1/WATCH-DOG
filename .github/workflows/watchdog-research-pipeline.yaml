@@ -56,7 +56,7 @@ jobs:
         GITHUB_API: ${{ secrets.API_GITHUB }}
       run: python extractor.py
       
-      - name: Run selector
+    - name: Run selector
       env:
         OPEN_API: ${{ secrets.OPEN_API }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
