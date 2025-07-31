@@ -60,7 +60,7 @@ class IntelligentPDFSelector:
                 ]
             },
             "gemini": {
-                "key": os.getenv("gemini_API"),
+                "key": os.getenv("GEMINI_API_KEY"),
                 "url": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                 "models": ["gemini-2.5-flash"]  # Main model for selector (rare conditions)
             },
@@ -125,6 +125,8 @@ class IntelligentPDFSelector:
             self.analytics = None
         
         # Use GitHub repository for seen PDFs tracking
+        self.seen_pdfs = self.github_manager.seen_titles  # Initialize seen_pdfs attribute
+        self.seen_pdfs_file = self.artifacts_dir / "seen-pdfs.txt"  # Initialize seen_pdfs_file attribute
         print(f"📚 Using GitHub repository for seen PDFs: {len(self.github_manager.seen_titles)} titles loaded")
         
         print("\n" + "="*80)
@@ -170,6 +172,7 @@ class IntelligentPDFSelector:
         title = self.extract_title_from_pdf_name(pdf_name)
         if not self.github_manager.is_title_seen(title):
             self.github_manager.add_seen_titles([title])
+            self.seen_pdfs.add(title)  # Also update local seen_pdfs set
             print(f"📝 Added to GitHub seen PDFs: {title}")
     
     def get_system_status(self):
