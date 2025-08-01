@@ -728,6 +728,57 @@ FOCUS AREAS:
 - Innovative approaches to problem-solving
 - Tools and technologies for development
 - Research with clear implementation potential
+✅ Buddy’s Areas of Interest for ArXiv Scraping Agent
+
+🧠 Core Focus Areas (Technical Themes)
+	•	🔹 Transformer Architectures
+	•	Variants: Efficient Transformers (Reformer, Linformer, Performer, Longformer)
+	•	Attention innovations: rotary embeddings (RoPE), sparse attention, local/global fusion
+	•	Encoder-decoder, decoder-only, and hybrid designs
+	•	🔹 SLAM-style Architectures
+	•	EF cycles (Encoder Fusion logic)
+	•	Overlapping context segmentation
+	•	Memory-persistent attention layers
+	•	Final context stitching (multi-level refinement)
+	•	🔹 Mixture of Experts (MoE)
+	•	Sparse expert activation and routing
+	•	Expert specialization (causal, numerical, structural, etc.)
+	•	Training stability and load balancing techniques
+
+🔍 Deep Learning Algorithms & Innovations
+	•	🔹 Novel DL algorithms, optimizers, and activation functions (e.g., GELU, SwiGLU)
+	•	🔹 Position encoding methods (RoPE, ALiBi, LEPE)
+	•	🔹 Gradient flow innovations and training techniques
+	•	🔹 Curriculum learning, knowledge distillation, transfer learning
+
+🤖 Agentic AI & Self-Evolving Systems
+	•	🔹 Self-improving / evolving autonomous AI agents
+	•	🔹 Memory systems and context adaptation
+	•	🔹 Multi-agent collaboration and competition
+	•	🔹 AI planning, reasoning, and world modeling
+	•	🔹 Tool-using agents (e.g., ReAct, AutoGPT, OpenAgents, Dev-GPT)
+
+🌌 AGI, ASI & Theories of Intelligence
+	•	🔹 Architectures aiming for AGI/ASI readiness
+	•	🔹 Long-term memory, reasoning, and decision modules
+	•	🔹 Emergent behaviors in scaling laws
+	•	🔹 Neural-symbolic integration (reasoning + DL)
+	•	🔹 Consciousness simulation, meta-learning, world models
+
+🧬 Multimodal & Generalist Models
+	•	🔹 Vision + Language (e.g., CLIP, Flamingo, Gato, Kosmos-1)
+	•	🔹 Universal decoders for multi-input fusion
+	•	🔹 Unified architectures for text, image, audio, and control
+	•	🔹 Grounded learning with real-world data (agents + environments)
+
+🧰 Supporting Tools & Architectures
+	•	🔹 Retrieval-Augmented Generation (RAG)
+	•	🔹 Vector DBs and memory buffers in agents
+	•	🔹 Reinforcement Learning (RLHF, curriculum-based, sparse reward)
+	•	🔹 Token routing, compression, and chunk-wise optimization
+	•	🔹 Graph neural networks, dynamic routing, and hierarchical models
+
+⸻
 
 EVALUATION CRITERIA:
 1. Does this paper contain implementable techniques or algorithms?
