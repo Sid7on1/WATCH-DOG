@@ -96,12 +96,12 @@ jobs:
         GITHUB_API: ${{ secrets.API_GITHUB }}
       run: python pusher.py
       
-    - name: Upload logs (optional)
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: automation-logs
-        path: |
-          *.log
-          logs/
-        retention-days: 7
+    - name: Run deleter
+      env:
+        OPEN_API: ${{ secrets.OPEN_API }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        cohere_API: ${{ secrets.COHERE_API }}
+        groq_API: ${{ secrets.GROQ_API }}
+        HF_API: ${{ secrets.HF_API }}
+        API_GITHUB: ${{ secrets.API_GITHUB }}
+      run: python deleter.py
