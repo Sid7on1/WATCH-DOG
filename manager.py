@@ -730,6 +730,7 @@ class ProjectManager:
             # Check for critical errors
             if self.critical_errors:
                 print("🚨 Critical errors detected, stopping project")
+                # Do not exit the entire workflow; record and break to summary
                 break
             
             time.sleep(5)  # Check every 5 seconds

@@ -16,6 +16,13 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+def env(*names):
+    for name in names:
+        val = os.getenv(name)
+        if val:
+            return val
+    return None
+
 class CodingAgent:
     def __init__(self, agent_id="coder4"):
         self.agent_id = agent_id
@@ -23,7 +30,7 @@ class CodingAgent:
         # Multi-API configuration for coding (RELIABLE MODELS - different priority for coder4)
         self.apis = {
             "cohere": {
-                "key": os.getenv("cohere_API"),
+                "key": env("cohere_API", "COHERE_API", "COHERE_API_KEY"),
                 "url": "https://api.cohere.ai/v2/chat",
                 "models": [
                     "command-r-plus",                          # Latest Cohere model
@@ -31,7 +38,7 @@ class CodingAgent:
                 ]
             },
             "openrouter": {
-                "key": os.getenv("OPEN_API"),
+                "key": env("OPEN_API", "OPENROUTER_API_KEY", "OPENROUTER_API_TOKEN"),
                 "url": "https://openrouter.ai/api/v1/chat/completions",
                 "models": [
                     "anthropic/claude-3.5-sonnet",             # Excellent for coding
@@ -40,7 +47,7 @@ class CodingAgent:
                 ]
             },
             "groq": {
-                "key": os.getenv("groq_API"),
+                "key": env("groq_API", "GROQ_API"),
                 "url": "https://api.groq.com/openai/v1/chat/completions",
                 "models": [
                     "llama-3.3-70b-versatile",                 # Best for coding

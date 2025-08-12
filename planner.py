@@ -30,6 +30,13 @@ except ImportError:
 # Load environment variables from .env file
 load_dotenv()
 
+def env(*names):
+    for name in names:
+        val = os.getenv(name)
+        if val:
+            return val
+    return None
+
 class IntelligentProjectPlanner:
     def __init__(self, artifacts_dir="artifacts"):
         self.artifacts_dir = Path(artifacts_dir)
@@ -39,7 +46,7 @@ class IntelligentProjectPlanner:
         # Multi-API configuration - Define self.apis first
         self.apis = {
             "openrouter": {
-                "key": os.getenv("OPEN_API"),
+                "key": env("OPEN_API", "OPENROUTER_API_KEY", "OPENROUTER_API_TOKEN"),
                 "url": "https://openrouter.ai/api/v1/chat/completions",
                 "models": [
                     # STRATEGY & ANALYSIS REASONING MODELS (for planner and manager)
@@ -49,12 +56,12 @@ class IntelligentProjectPlanner:
                 ]
             },
             "gemini": {
-                "key": os.getenv("gemini_API"),
+                "key": env("gemini_API", "GEMINI_API_KEY"),
                 "url": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                 "models": ["gemini-2.5-flash"]  # Main model for planner (rare conditions)
             },
             "groq": {
-                "key": os.getenv("groq_API"),
+                "key": env("groq_API", "GROQ_API"),
                 "url": "https://api.groq.com/openai/v1/chat/completions",
                 "models": [
                     # PLANNER & MANAGER MODELS (from reference.txt)
@@ -63,7 +70,7 @@ class IntelligentProjectPlanner:
                 ]
             },
             "cohere": {
-                "key": os.getenv("cohere_API"),
+                "key": env("cohere_API", "COHERE_API", "COHERE_API_KEY"),
                 "url": "https://api.cohere.ai/v2/chat",  # Updated to V2
                 "models": [
                     # PLANNER OPTIMIZED (rare conditions - from reference.txt)
@@ -71,7 +78,7 @@ class IntelligentProjectPlanner:
                 ]
             },
             "huggingface": {
-                "key": os.getenv("HF_API"),
+                "key": env("HF_API", "HUGGINGFACE_API_TOKEN", "HUGGINGFACEHUB_API_TOKEN"),
                 "url": "https://api-inference.huggingface.co/models/{model}/v1/chat/completions",
                 "models": [
                     # PLANNER & MANAGER MODELS (from reference.txt)

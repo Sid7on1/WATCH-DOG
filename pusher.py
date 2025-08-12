@@ -22,7 +22,14 @@ class GitHubRepositoryManager:
     def __init__(self, repo_name="WATCHDOG_memory", artifacts_dir="artifacts"):
         self.repo_name = repo_name
         self.artifacts_dir = Path(artifacts_dir)
-        self.github_token = os.getenv("GITHUB_PAT") or os.getenv("GITHUB_API")
+        # Support multiple common environment variable names for GitHub tokens
+        self.github_token = (
+            os.getenv("GITHUB_PAT")
+            or os.getenv("GITHUB_API")
+            or os.getenv("GITHUB_TOKEN")
+            or os.getenv("API_GITHUB")
+            or os.getenv("GH_TOKEN")
+        )
         
         # GitHub API configuration
         self.api_base = "https://api.github.com"
@@ -469,8 +476,16 @@ class GitHubRepositoryManager:
         # Upload activity log to GitHub
         self.upload_activity_log()
         
-        # Clean up all local artifacts
-        self.cleanup_all_artifacts()
+        # Clean up all local artifacts (guarded for CI safety)
+        finalize_flag = os.getenv("WATCHDOG_FINALIZE", "0").strip()
+        if finalize_flag == "1":
+            self.cleanup_all_artifacts()
+        else:
+            self.log_activity(
+                "cleanup",
+                "Skipping local artifacts cleanup (set WATCHDOG_FINALIZE=1 to enable)",
+                "warning",
+            )
         
         print(f"✅ Workflow completed with {len(self.seen_titles)} total seen titles")
         return True

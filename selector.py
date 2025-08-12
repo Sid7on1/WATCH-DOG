@@ -15,6 +15,13 @@ from pusher import GitHubRepositoryManager
 # Load environment variables
 load_dotenv()
 
+def env(*names):
+    for name in names:
+        val = os.getenv(name)
+        if val:
+            return val
+    return None
+
 # Import enhanced modules
 try:
     from selector_config import SelectorConfig
@@ -51,7 +58,7 @@ class IntelligentPDFSelector:
         # Multi-API configuration - SELECTOR OPTIMIZED (Fast & High Rate Limits)
         self.apis = {
             "openrouter": {
-                "key": os.getenv("OPEN_API"),
+                "key": env("OPEN_API", "OPENROUTER_API_KEY", "OPENROUTER_API_TOKEN"),
                 "url": "https://openrouter.ai/api/v1/chat/completions",
                 "models": [
                     # FAST & HIGH RATE LIMIT MODELS (for PDF selection)
@@ -60,12 +67,12 @@ class IntelligentPDFSelector:
                 ]
             },
             "gemini": {
-                "key": os.getenv("GEMINI_API_KEY"),
+                "key": env("GEMINI_API_KEY", "gemini_API"),
                 "url": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                 "models": ["gemini-2.5-flash"]  # Main model for selector (rare conditions)
             },
             "groq": {
-                "key": os.getenv("groq_API"),
+                "key": env("groq_API", "GROQ_API"),
                 "url": "https://api.groq.com/openai/v1/chat/completions",
                 "models": [
                     # SELECTOR OPTIMIZED (from reference.txt)
@@ -74,7 +81,7 @@ class IntelligentPDFSelector:
                 ]
             },
             "cohere": {
-                "key": os.getenv("cohere_API"),
+                "key": env("cohere_API", "COHERE_API", "COHERE_API_KEY"),
                 "url": "https://api.cohere.ai/v2/chat",  # Updated to V2
                 "models": [
                     # CORRECT MODEL (from list_all_models.py)
@@ -82,7 +89,7 @@ class IntelligentPDFSelector:
                 ]
             },
             "huggingface": {
-                "key": os.getenv("HF_API"),
+                "key": env("HF_API", "HUGGINGFACE_API_TOKEN", "HUGGINGFACEHUB_API_TOKEN"),
                 "url": "https://api-inference.huggingface.co/models/{model}/v1/chat/completions",
                 "models": [
                     # SELECTOR OPTIMIZED (Fast models available via API)
@@ -159,7 +166,7 @@ class IntelligentPDFSelector:
                 file_count = len([f for f in temp_files if f.is_file()])
                 
                 if file_count > 0:
-                    shutil.rmtree(self.temp_dir)
+                    shutil.rmtree(self.temp_dir, ignore_errors=True)
                     self.temp_dir.mkdir(parents=True, exist_ok=True)
                     print(f"🧹 Cleaned up {file_count} temporary files")
                 else:
@@ -608,7 +615,7 @@ class IntelligentPDFSelector:
         return combined_analysis
     
     def analyze_chunk_relevance_direct(self, chunk_text, pdf_name, chunk_num, total_chunks, max_retries=2):
-        """Direct analysis without context length handling (used for sub-chunks)"""
+        """Direct analysis without context length handling (used for sub-chunks). Returns a structured dict."""
         system_prompt = """You are an AI research assistant helping to identify papers relevant for self-evolution and strong project development.
 
 GOAL: The user wants to self-evolve and develop strong, innovative projects from research papers.
@@ -632,7 +639,7 @@ EVALUATION CRITERIA:
 
 RESPONSE FORMAT:
 Simply respond with:
-RELEVANT or NOT_RELEVANT
+RELEVANT or NOT RELEVANT
 Followed by a brief explanation of why.
 
 NO JSON NEEDED - Just plain text response."""
@@ -661,21 +668,33 @@ Analyze this chunk for relevance to self-evolution and strong project developmen
                     self.analytics.log_api_call(self.current_api, current_model, api_response_time, True)
                 
                 # Simple text analysis - NO JSON PARSING NEEDED
-                analysis_text = analysis_text.strip().lower()
+                analysis_text_clean = ' '.join(analysis_text.strip().lower().split())
                 
                 # Determine relevance from simple text response
-                is_relevant = "relevant" in analysis_text and "not_relevant" not in analysis_text
+                is_not_relevant = ("not relevant" in analysis_text_clean) or (analysis_text_clean.startswith("not relevant"))
+                is_relevant = ("relevant" in analysis_text_clean) and not is_not_relevant
+                
+                # Confidence heuristic
+                confidence = 0.85 if is_relevant else (0.15 if is_not_relevant else 0.5)
                 
                 # Clean terminal output
-                status = "RELEVANT" if is_relevant else "NOT RELEVANT"
+                status = "RELEVANT" if is_relevant else ("NOT RELEVANT" if is_not_relevant else "UNSURE")
                 print(f"\n📊 ANALYSIS RESULT:")
                 print(f"   Status: {status}")
                 print(f"   Response: {analysis_text[:200]}...")
                 print(f"   API Used: {self.current_api.upper()} - {current_model}")
                 print("-" * 60)
                 
-                # Return simple boolean result
-                return is_relevant
+                # Return structured result
+                return {
+                    "relevant": bool(is_relevant),
+                    "confidence": confidence,
+                    "reason": analysis_text[:300] + ("..." if len(analysis_text) > 300 else ""),
+                    "key_concepts": [],
+                    "implementation_potential": "medium" if is_relevant else "low",
+                    "continue_reading": bool(is_relevant),
+                    "unsure": not (is_relevant or is_not_relevant)
+                }
                     
             except requests.exceptions.RequestException as e:
                 error_msg = str(e)
@@ -727,7 +746,6 @@ FOCUS AREAS:
 - Performance optimization techniques
 - Innovative approaches to problem-solving
 - Tools and technologies for development
-- Research with clear implementation potential
 ✅ Buddy’s Areas of Interest for ArXiv Scraping Agent
 
 🧠 Core Focus Areas (Technical Themes)
@@ -789,7 +807,7 @@ EVALUATION CRITERIA:
 
 RESPONSE FORMAT:
 Simply respond with:
-RELEVANT or NOT_RELEVANT
+RELEVANT or NOT RELEVANT
 Followed by a brief explanation of why.
 
 NO JSON NEEDED - Just plain text response."""
@@ -819,13 +837,14 @@ Analyze this chunk for relevance to self-evolution and strong project developmen
                 analysis_text = self.make_api_request(system_prompt, user_prompt, 1000)
                 
                 # Simple text analysis - NO JSON PARSING NEEDED
-                analysis_text_clean = analysis_text.strip().lower()
+                analysis_text_clean = ' '.join(analysis_text.strip().lower().split())
                 
                 # Determine relevance from simple text response
-                is_relevant = "relevant" in analysis_text_clean and "not_relevant" not in analysis_text_clean
+                is_not_relevant = ("not relevant" in analysis_text_clean) or (analysis_text_clean.startswith("not relevant"))
+                is_relevant = ("relevant" in analysis_text_clean) and not is_not_relevant
                 
                 # Clean terminal output
-                status = "RELEVANT" if is_relevant else "NOT RELEVANT"
+                status = "RELEVANT" if is_relevant else ("NOT RELEVANT" if is_not_relevant else "UNSURE")
                 print(f"\n📊 ANALYSIS RESULT:")
                 print(f"   Status: {status}")
                 print(f"   Response: {analysis_text[:200]}...")
@@ -834,13 +853,13 @@ Analyze this chunk for relevance to self-evolution and strong project developmen
                 
                 # Return simple result for compatibility with existing code
                 return {
-                    "relevant": is_relevant,
-                    "confidence": 0.8 if is_relevant else 0.2,
+                    "relevant": bool(is_relevant),
+                    "confidence": 0.8 if is_relevant else (0.2 if is_not_relevant else 0.5),
                     "reason": analysis_text[:100] + "..." if len(analysis_text) > 100 else analysis_text,
                     "key_concepts": [],
                     "implementation_potential": "medium" if is_relevant else "low",
-                    "continue_reading": is_relevant,
-                    "unsure": False
+                    "continue_reading": bool(is_relevant),
+                    "unsure": not (is_relevant or is_not_relevant)
                 }
                     
             except requests.exceptions.RequestException as e:

@@ -151,17 +151,23 @@ def main():
     """
     Main function to execute the artifacts directory deletion
     """
-    # Get environment variables
-    github_token = os.getenv('API_GITHUB')
+    # Get environment variables (support multiple common names)
+    github_token = (
+        os.getenv('API_GITHUB')
+        or os.getenv('GITHUB_TOKEN')
+        or os.getenv('GITHUB_PAT')
+        or os.getenv('GITHUB_API')
+        or os.getenv('GH_TOKEN')
+    )
     
     if not github_token:
-        print("Error: API_GITHUB environment variable not found")
-        print("Make sure your GitHub PAT is stored in the environment variable API_GITHUB")
+        print("Error: GitHub token environment variable not found (API_GITHUB/GITHUB_TOKEN/GITHUB_PAT)")
+        print("Set one of: API_GITHUB, GITHUB_TOKEN, GITHUB_PAT, GITHUB_API, GH_TOKEN")
         sys.exit(1)
     
-    # Repository configuration
-    OWNER = "your-username"  # Replace with your GitHub username/organization
-    REPO = "WATCHDOG_memory"
+    # Repository configuration from env with sensible defaults
+    OWNER = os.getenv("GITHUB_OWNER") or os.getenv("GITHUB_USER") or os.getenv("USER") or "your-username"
+    REPO = os.getenv("GITHUB_REPO") or "WATCHDOG_memory"
     
     print(f"Starting cleanup of artifacts directory in {OWNER}/{REPO}")
     print("=" * 50)
