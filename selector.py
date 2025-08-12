@@ -22,6 +22,50 @@ def env(*names):
             return val
     return None
 
+# Simple keyword sets for strict relevance scoring
+INTEREST_KEYWORDS = {
+    # Architectures and families
+    "transformer", "attention", "self-attention", "multi-head", "encoder", "decoder",
+    "moe", "mixture of experts", "slam", "memory", "retrieval", "rag",
+    # Training and optimization
+    "optimizer", "training", "pretraining", "fine-tuning", "curriculum", "distillation",
+    # Position encodings and variants
+    "rope", "alibi", "positional encoding", "rotary",
+    # Evaluation and benchmarks
+    "benchmark", "dataset", "evaluation", "metrics",
+    # Multimodal / agents
+    "agent", "multi-agent", "world model", "vision-language", "clip",
+}
+
+IMPLEMENTABILITY_TERMS = {
+    "algorithm", "method", "architecture", "implementation", "code", "pipeline",
+    "framework", "module", "inference", "training loop", "loss function", "latency",
+}
+
+NEGATIVE_HINTS = {
+    # Common non-AI/ML domains or signals to down-rank
+    "biology", "medical", "chemistry", "physics", "quantum", "astronomy", "materials",
+}
+
+def compute_relevance_score(text: str) -> float:
+    t = text.lower()
+    score = 0.0
+    # Count distinct keyword hits
+    score += sum(1 for k in INTEREST_KEYWORDS if k in t)
+    score += sum(1 for k in IMPLEMENTABILITY_TERMS if k in t)
+    score -= sum(1 for k in NEGATIVE_HINTS if k in t)
+    return float(score)
+
+def parse_label_first_line(analysis_text: str):
+    if not analysis_text:
+        return None
+    first_line = analysis_text.strip().splitlines()[0].strip().lower()
+    if first_line.startswith("relevant"):
+        return "relevant"
+    if first_line.startswith("not relevant") or first_line.startswith("not_relevant"):
+        return "not_relevant"
+    return None
+
 # Import enhanced modules
 try:
     from selector_config import SelectorConfig
@@ -123,6 +167,11 @@ class IntelligentPDFSelector:
         
         # Context length settings (from config)
         self.max_chunk_size = self.config.MAX_CHUNK_SIZE
+        # Strictness threshold (higher => stricter). Defaults to 2.0
+        try:
+            self.strict_threshold = float(os.getenv("SELECTOR_MIN_SCORE", "2.0"))
+        except Exception:
+            self.strict_threshold = 2.0
         
         # Initialize performance analytics
         if ENHANCED_FEATURES:
@@ -667,15 +716,26 @@ Analyze this chunk for relevance to self-evolution and strong project developmen
                 if self.analytics:
                     self.analytics.log_api_call(self.current_api, current_model, api_response_time, True)
                 
-                # Simple text analysis - NO JSON PARSING NEEDED
-                analysis_text_clean = ' '.join(analysis_text.strip().lower().split())
+                # Parse label from first line only
+                label = parse_label_first_line(analysis_text)
+                is_not_relevant = (label == "not_relevant")
+                is_relevant_label = (label == "relevant")
                 
-                # Determine relevance from simple text response
-                is_not_relevant = ("not relevant" in analysis_text_clean) or (analysis_text_clean.startswith("not relevant"))
-                is_relevant = ("relevant" in analysis_text_clean) and not is_not_relevant
+                # Rule-based score on content
+                rule_score = compute_relevance_score(chunk_text)
+                passes_threshold = rule_score >= self.strict_threshold
+                
+                # Final decision: require BOTH LLM label and rule score
+                is_relevant = bool(is_relevant_label and passes_threshold)
                 
                 # Confidence heuristic
-                confidence = 0.85 if is_relevant else (0.15 if is_not_relevant else 0.5)
+                if is_relevant:
+                    confidence = 0.85
+                elif is_not_relevant:
+                    confidence = 0.15
+                else:
+                    # If label is unsure, use rule score to modulate confidence
+                    confidence = 0.5 + min(max((rule_score - self.strict_threshold) * 0.05, -0.3), 0.3)
                 
                 # Clean terminal output
                 status = "RELEVANT" if is_relevant else ("NOT RELEVANT" if is_not_relevant else "UNSURE")
@@ -683,6 +743,7 @@ Analyze this chunk for relevance to self-evolution and strong project developmen
                 print(f"   Status: {status}")
                 print(f"   Response: {analysis_text[:200]}...")
                 print(f"   API Used: {self.current_api.upper()} - {current_model}")
+                print(f"   Rule Score: {rule_score:.2f} (threshold {self.strict_threshold:.2f})")
                 print("-" * 60)
                 
                 # Return structured result
@@ -693,7 +754,9 @@ Analyze this chunk for relevance to self-evolution and strong project developmen
                     "key_concepts": [],
                     "implementation_potential": "medium" if is_relevant else "low",
                     "continue_reading": bool(is_relevant),
-                    "unsure": not (is_relevant or is_not_relevant)
+                    "unsure": not (is_relevant or is_not_relevant),
+                    "rule_score": rule_score,
+                    "rule_threshold": self.strict_threshold,
                 }
                     
             except requests.exceptions.RequestException as e:
@@ -836,12 +899,17 @@ Analyze this chunk for relevance to self-evolution and strong project developmen
                 
                 analysis_text = self.make_api_request(system_prompt, user_prompt, 1000)
                 
-                # Simple text analysis - NO JSON PARSING NEEDED
-                analysis_text_clean = ' '.join(analysis_text.strip().lower().split())
+                # Parse label from first line only
+                label = parse_label_first_line(analysis_text)
+                is_not_relevant = (label == "not_relevant")
+                is_relevant_label = (label == "relevant")
                 
-                # Determine relevance from simple text response
-                is_not_relevant = ("not relevant" in analysis_text_clean) or (analysis_text_clean.startswith("not relevant"))
-                is_relevant = ("relevant" in analysis_text_clean) and not is_not_relevant
+                # Rule-based score on content
+                rule_score = compute_relevance_score(chunk_text)
+                passes_threshold = rule_score >= self.strict_threshold
+                
+                # Final decision: require BOTH LLM label and rule score
+                is_relevant = bool(is_relevant_label and passes_threshold)
                 
                 # Clean terminal output
                 status = "RELEVANT" if is_relevant else ("NOT RELEVANT" if is_not_relevant else "UNSURE")
@@ -849,6 +917,7 @@ Analyze this chunk for relevance to self-evolution and strong project developmen
                 print(f"   Status: {status}")
                 print(f"   Response: {analysis_text[:200]}...")
                 print(f"   API Used: {self.current_api.upper()} - {current_model.replace(':free', '').replace('/', ' / ')}")
+                print(f"   Rule Score: {rule_score:.2f} (threshold {self.strict_threshold:.2f})")
                 print("-" * 60)
                 
                 # Return simple result for compatibility with existing code
@@ -859,7 +928,9 @@ Analyze this chunk for relevance to self-evolution and strong project developmen
                     "key_concepts": [],
                     "implementation_potential": "medium" if is_relevant else "low",
                     "continue_reading": bool(is_relevant),
-                    "unsure": not (is_relevant or is_not_relevant)
+                    "unsure": not (is_relevant or is_not_relevant),
+                    "rule_score": rule_score,
+                    "rule_threshold": self.strict_threshold,
                 }
                     
             except requests.exceptions.RequestException as e:
