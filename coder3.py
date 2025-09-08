@@ -278,9 +278,57 @@ class CodingAgent:
                 })
                 break
     
+    def generate_comprehensive_readme(self, file_info, project_info, max_retries=2):
+        """Generate comprehensive README.md file"""
+        system_prompt = f"""Create a COMPREHENSIVE README.md (NOT just one paragraph!).
+
+PROJECT: {project_info['project_name']} - {project_info['description']}
+
+MUST INCLUDE:
+- Detailed overview (multiple paragraphs)
+- Feature list
+- Installation steps
+- Usage examples with code
+- Architecture explanation
+- Configuration options
+- MINIMUM 200 lines of content"""
+
+        try:
+            readme = self.make_api_request(system_prompt, f"Create comprehensive README for {project_info['project_name']}", 4000)
+            return readme.replace("```markdown", "").replace("```", "").strip()
+        except:
+            return f"""# {project_info['project_name']}
+
+## Overview
+{project_info['description']}
+
+## Features
+- Advanced AI/ML implementation
+- Production-ready architecture
+- Comprehensive documentation
+
+## Installation
+```bash
+pip install -r requirements.txt
+```
+
+## Usage
+```python
+from main import MainClass
+system = MainClass()
+result = system.run()
+```
+
+## License
+MIT License"""
+
     def generate_code(self, file_info, project_info, max_retries=2):
         """Generate code for a specific file using Qwen Coder"""
         filename = file_info.get('filename', file_info.get('name', 'unknown_file'))
+        
+        # Special handling for README files
+        if filename.lower() in ['readme.md', 'readme']:
+            return self.generate_comprehensive_readme(file_info, project_info, max_retries)
         purpose = file_info['purpose']
         dependencies = file_info.get('dependencies', [])
         key_functions = file_info.get('key_functions', [])

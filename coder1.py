@@ -377,9 +377,167 @@ class CodingAgent:
                 })
                 break
     
+    def generate_readme(self, file_info, project_info, max_retries=2):
+        """Generate comprehensive README.md file"""
+        filename = file_info.get('filename', file_info.get('name', 'README.md'))
+        
+        # Get paper content from task
+        paper_content = self.current_task.get('paper_content', 'No paper content available')
+        paper_title = self.current_task.get('paper_title', project_info['project_name'])
+        
+        system_prompt = f"""You are a technical documentation expert creating a COMPREHENSIVE README.md file.
+
+PROJECT CONTEXT:
+- Project: {project_info['project_name']}
+- Type: {project_info['project_type']}
+- Description: {project_info['description']}
+- Key Algorithms: {', '.join(project_info.get('key_algorithms', []))}
+- Main Libraries: {', '.join(project_info.get('main_libraries', []))}
+
+RESEARCH PAPER: {paper_title}
+
+CRITICAL TASK: Create a DETAILED, PROFESSIONAL README.md (NOT just one paragraph!)
+
+MANDATORY SECTIONS TO INCLUDE:
+1. # Project Title
+2. ## Overview (2-3 paragraphs explaining what this does)
+3. ## Features (bullet points of key capabilities)
+4. ## Installation (step-by-step setup instructions)
+5. ## Usage (code examples and how to run)
+6. ## Architecture (explain the system design)
+7. ## API Reference (if applicable)
+8. ## Configuration (settings and parameters)
+9. ## Examples (practical use cases)
+10. ## Contributing (how to contribute)
+11. ## License
+12. ## Research Paper Reference
+
+QUALITY REQUIREMENTS:
+- MINIMUM 200 lines of content
+- Professional formatting with proper markdown
+- Code examples with syntax highlighting
+- Clear installation steps
+- Usage examples that actually work
+- Architecture diagrams (ASCII art if needed)
+- Comprehensive feature list
+- Troubleshooting section
+- Performance notes
+- Dependencies explanation
+
+DO NOT create a single paragraph README! This must be comprehensive documentation."""
+
+        user_prompt = f"""Create a comprehensive README.md for the {project_info['project_name']} project.
+
+This is an AI/ML project implementing: {project_info['description']}
+
+Key algorithms: {', '.join(project_info.get('key_algorithms', []))}
+
+Make it professional, detailed, and useful for developers who want to understand and use this project."""
+
+        for attempt in range(max_retries + 1):
+            try:
+                api_config, current_model = self.get_current_api_config()
+                print(f"📚 {self.agent_id} generating comprehensive README.md using {self.current_api}..." + 
+                      (f" (Attempt {attempt + 1})" if attempt > 0 else ""))
+                
+                readme_content = self.make_api_request(system_prompt, user_prompt, 4000)
+                print(f"📝 {self.agent_id} generated README ({len(readme_content)} characters)")
+                
+                # Clean up the response (remove markdown code blocks if present)
+                if "```markdown" in readme_content:
+                    readme_content = readme_content.split("```markdown")[1].split("```")[0]
+                elif "```" in readme_content and readme_content.count("```") >= 2:
+                    # Only remove outer code blocks, keep inner ones
+                    parts = readme_content.split("```")
+                    if len(parts) >= 3:
+                        readme_content = parts[1]
+                
+                return readme_content.strip()
+                
+            except Exception as e:
+                print(f"❌ Error generating README: {e}")
+                if attempt < max_retries:
+                    time.sleep(30)
+                    continue
+                else:
+                    return self.generate_fallback_readme(project_info)
+        
+        return self.generate_fallback_readme(project_info)
+    
+    def generate_fallback_readme(self, project_info):
+        """Generate a basic but comprehensive README as fallback"""
+        return f"""# {project_info['project_name']}
+
+## Overview
+
+{project_info['description']}
+
+This project implements advanced AI/ML algorithms for {project_info['project_type']} applications.
+
+## Features
+
+- Implementation of {', '.join(project_info.get('key_algorithms', ['advanced algorithms']))}
+- Built with {', '.join(project_info.get('main_libraries', ['Python', 'PyTorch']))}
+- Production-ready code with comprehensive error handling
+- Modular architecture for easy extension
+- Comprehensive logging and monitoring
+
+## Installation
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd {project_info['project_name']}
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+## Usage
+
+```python
+# Basic usage example
+from main import MainClass
+
+# Initialize the system
+system = MainClass()
+
+# Run the main functionality
+result = system.run()
+print(result)
+```
+
+## Architecture
+
+The project follows a modular architecture:
+
+- `main.py` - Entry point and main orchestration
+- `model.py` - Core AI/ML model implementation
+- `data_processing.py` - Data preprocessing and handling
+- `utils.py` - Utility functions and helpers
+- `config.py` - Configuration management
+
+## Requirements
+
+See `requirements.txt` for full dependency list.
+
+## License
+
+MIT License
+
+## Research Paper
+
+This implementation is based on research in {project_info['project_type']} and follows established best practices in AI/ML development.
+"""
+
     def generate_code(self, file_info, project_info, max_retries=2):
         """Generate code for a specific file using Qwen Coder"""
         filename = file_info.get('filename', file_info.get('name', 'unknown_file'))
+        
+        # Special handling for README files
+        if filename.lower() in ['readme.md', 'readme']:
+            return self.generate_readme(file_info, project_info, max_retries)
+        
         purpose = file_info['purpose']
         dependencies = file_info.get('dependencies', [])
         key_functions = file_info.get('key_functions', [])

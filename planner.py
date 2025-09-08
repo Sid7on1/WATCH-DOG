@@ -37,6 +37,57 @@ def env(*names):
             return val
     return None
 
+def clean_project_name(raw_name: str) -> str:
+    """Clean and shorten project names to avoid terrible naming like in screenshots"""
+    import re
+    
+    # Remove common prefixes that make names too long
+    prefixes_to_remove = [
+        "enhanced_", "cs", "cscl_", "csne_", "cscv_", "csro_", "cslg_",
+        "arxiv_", "paper_", "project_from_"
+    ]
+    
+    name = raw_name.lower()
+    for prefix in prefixes_to_remove:
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+    
+    # Remove arXiv IDs and version numbers (like 250821741v1)
+    name = re.sub(r'\d{8,}v?\d*_?', '', name)
+    
+    # Extract key meaningful words (avoid clinical, medical, etc.)
+    meaningful_words = []
+    words = name.replace('_', ' ').replace('-', ' ').split()
+    
+    # Skip non-AI/ML words
+    skip_words = {
+        'clinical', 'medical', 'patient', 'hospital', 'healthcare', 'therapy',
+        'survey', 'credibility', 'radiation', 'oncology', 'kalman', 'filter',
+        'control', 'theory', 'soft', 'inducement', 'steering', 'tabular',
+        'uncertainty', 'the', 'of', 'and', 'or', 'in', 'on', 'at', 'to',
+        'for', 'with', 'by', 'from', 'are', 'is', 'not', 'all', 'parameters',
+        'created', 'equal', 'smart', 'isolat', 'unveiling', 'role', 'data',
+        'benchmarking', 'gpt', 'measurab', 'quantifying', 'limits', 'reasoning',
+        'systematic', 'efficient', 'fine', 'tuning', 'pretrained', 'natu'
+    }
+    
+    for word in words:
+        if len(word) > 2 and word not in skip_words and len(meaningful_words) < 3:
+            meaningful_words.append(word)
+    
+    if not meaningful_words:
+        # Fallback to AI/ML generic names
+        return "ai_ml_project"
+    
+    # Create clean name with max 3 words
+    clean_name = '_'.join(meaningful_words[:3])
+    
+    # Ensure it's not too long (max 30 chars)
+    if len(clean_name) > 30:
+        clean_name = clean_name[:30].rstrip('_')
+    
+    return clean_name
+
 class IntelligentProjectPlanner:
     def __init__(self, artifacts_dir="artifacts"):
         self.artifacts_dir = Path(artifacts_dir)
@@ -385,7 +436,7 @@ class IntelligentProjectPlanner:
         
         enhanced_plan = {
             "project_type": project_type,
-            "project_name": f"enhanced_{paper_name.replace(' ', '_').replace('-', '_')}",
+            "project_name": clean_project_name(paper_name),
             "description": f"Enhanced AI project based on {paper_name} with content analysis. Detected project type: {project_type.replace('_', ' ')} (confidence score: {best_type_item[1]} matches).",
             "key_algorithms": key_algorithms,
             "main_libraries": template.get("main_libraries", ["torch", "numpy", "pandas"]), # Fallback to common libs
@@ -673,7 +724,7 @@ RESPONSE FORMAT:
 Respond with ONLY a JSON object that adheres strictly to the following schema:
 {
     "project_type": "transformer|agent|computer_vision|nlp|reinforcement_learning|optimization|other",
-    "project_name": "descriptive_project_name_based_on_paper_e.g._AlphaZero_Chess_AI",
+    "project_name": "clean_short_name_max_3_words_e.g._alphazero_chess",
     "description": "Detailed project description based on paper content, summarizing its core idea and goals.",
     "key_algorithms": ["algorithm1_e.g._Monte_Carlo_Tree_Search", "algorithm2_e.g._ResNet"],
     "main_libraries": ["torch", "transformers", "numpy", "pandas", "specific_libs_like_scikit_learn"],
@@ -897,7 +948,7 @@ Analyze this research paper and create a comprehensive, detailed project structu
         
         fallback_plan = {
             "project_type": project_type,
-            "project_name": f"project_from_{paper_name.replace(' ', '_').replace('-', '_')}",
+            "project_name": clean_project_name(paper_name),
             "description": f"AI project based on {paper_name} (Basic Template Fallback: Manual analysis needed).",
             "key_algorithms": ["template_based_placeholder"],
             "main_libraries": ["torch", "numpy", "pandas"],

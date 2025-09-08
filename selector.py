@@ -22,39 +22,83 @@ def env(*names):
             return val
     return None
 
-# Simple keyword sets for strict relevance scoring
-INTEREST_KEYWORDS = {
-    # Architectures and families
+# STRICT AI/ML keyword sets for high-quality project selection
+CORE_AI_ML_KEYWORDS = {
+    # Core AI/ML architectures
     "transformer", "attention", "self-attention", "multi-head", "encoder", "decoder",
-    "moe", "mixture of experts", "slam", "memory", "retrieval", "rag",
-    # Training and optimization
-    "optimizer", "training", "pretraining", "fine-tuning", "curriculum", "distillation",
-    # Position encodings and variants
-    "rope", "alibi", "positional encoding", "rotary",
-    # Evaluation and benchmarks
-    "benchmark", "dataset", "evaluation", "metrics",
-    # Multimodal / agents
-    "agent", "multi-agent", "world model", "vision-language", "clip",
+    "neural network", "deep learning", "machine learning", "artificial intelligence",
+    "convolutional", "recurrent", "lstm", "gru", "bert", "gpt", "llama", "clip",
+    
+    # Advanced AI techniques
+    "reinforcement learning", "generative adversarial", "variational autoencoder",
+    "diffusion model", "contrastive learning", "self-supervised", "few-shot learning",
+    "meta-learning", "transfer learning", "federated learning", "multi-modal",
+    
+    # Practical AI systems
+    "retrieval augmented generation", "rag", "vector database", "embedding",
+    "semantic search", "question answering", "text generation", "image generation",
+    "object detection", "image segmentation", "natural language processing",
+    
+    # AI agents and automation
+    "autonomous agent", "multi-agent", "intelligent agent", "planning", "reasoning",
+    "tool use", "code generation", "automated", "robotics", "computer vision"
 }
 
-IMPLEMENTABILITY_TERMS = {
-    "algorithm", "method", "architecture", "implementation", "code", "pipeline",
-    "framework", "module", "inference", "training loop", "loss function", "latency",
+IMPLEMENTATION_KEYWORDS = {
+    "algorithm", "method", "architecture", "implementation", "framework", "system",
+    "pipeline", "model", "training", "inference", "optimization", "performance",
+    "scalable", "efficient", "real-time", "production", "deployment", "api"
 }
 
-NEGATIVE_HINTS = {
-    # Common non-AI/ML domains or signals to down-rank
-    "biology", "medical", "chemistry", "physics", "quantum", "astronomy", "materials",
+# Strict negative filtering - reject these topics
+NEGATIVE_KEYWORDS = {
+    # Non-technical domains
+    "clinical", "medical diagnosis", "patient", "hospital", "healthcare", "therapy",
+    "pharmaceutical", "drug", "disease", "symptom", "treatment", "surgery",
+    
+    # Pure academic/theoretical (not implementable)
+    "survey", "review", "theoretical analysis", "mathematical proof", "complexity theory",
+    "purely theoretical", "abstract framework", "conceptual model",
+    
+    # Non-AI domains
+    "quantum physics", "chemistry", "biology", "astronomy", "geology", "materials science",
+    "social science", "psychology", "economics", "finance", "marketing", "business",
+    
+    # Overly specific/niche
+    "radiation oncology", "tabular data uncertainty", "survey credibility", 
+    "soft inducement", "clinical note", "kalman filter", "control theory"
 }
 
 def compute_relevance_score(text: str) -> float:
+    """Compute strict relevance score for AI/ML implementation potential"""
     t = text.lower()
-    score = 0.0
-    # Count distinct keyword hits
-    score += sum(1 for k in INTEREST_KEYWORDS if k in t)
-    score += sum(1 for k in IMPLEMENTABILITY_TERMS if k in t)
-    score -= sum(1 for k in NEGATIVE_HINTS if k in t)
-    return float(score)
+    
+    # IMMEDIATE REJECTION for negative keywords
+    for neg_keyword in NEGATIVE_KEYWORDS:
+        if neg_keyword in t:
+            return 0.0  # Immediate rejection
+    
+    # IMMEDIATE REJECTION for non-AI/ML papers
+    if not any(keyword in t for keyword in CORE_AI_ML_KEYWORDS):
+        return 0.0  # Must have at least one core AI/ML keyword
+    
+    # Core AI/ML score (weighted heavily)
+    ai_ml_score = sum(2 for k in CORE_AI_ML_KEYWORDS if k in t)
+    
+    # Implementation potential score
+    impl_score = sum(1 for k in IMPLEMENTATION_KEYWORDS if k in t)
+    
+    # Heavy penalty for negative keywords
+    negative_penalty = sum(5 for k in NEGATIVE_KEYWORDS if k in t)
+    
+    # Calculate final score
+    total_score = ai_ml_score + impl_score - negative_penalty
+    
+    # Must have at least 2 core AI/ML keywords to be considered
+    if ai_ml_score < 2:
+        total_score = 0
+    
+    return float(max(0, total_score))  # Don't allow negative scores
 
 def parse_label_first_line(analysis_text: str):
     if not analysis_text:
@@ -167,11 +211,11 @@ class IntelligentPDFSelector:
         
         # Context length settings (from config)
         self.max_chunk_size = self.config.MAX_CHUNK_SIZE
-        # Strictness threshold (higher => stricter). Defaults to 2.0
+        # Strictness threshold (higher => stricter). Defaults to 6.0 for much better quality
         try:
-            self.strict_threshold = float(os.getenv("SELECTOR_MIN_SCORE", "2.0"))
+            self.strict_threshold = float(os.getenv("SELECTOR_MIN_SCORE", "6.0"))
         except Exception:
-            self.strict_threshold = 2.0
+            self.strict_threshold = 6.0
         
         # Initialize performance analytics
         if ENHANCED_FEATURES:
@@ -665,33 +709,39 @@ class IntelligentPDFSelector:
     
     def analyze_chunk_relevance_direct(self, chunk_text, pdf_name, chunk_num, total_chunks, max_retries=2):
         """Direct analysis without context length handling (used for sub-chunks). Returns a structured dict."""
-        system_prompt = """You are an AI research assistant helping to identify papers relevant for self-evolution and strong project development.
+        system_prompt = """You are a STRICT AI/ML research filter. Your job is to REJECT papers that are not clearly implementable AI/ML systems.
 
-GOAL: The user wants to self-evolve and develop strong, innovative projects from research papers.
+MISSION: Only select papers that can be turned into PRACTICAL AI/ML PROJECTS with clear implementation value.
 
-FOCUS AREAS:
-- AI/ML techniques that can be implemented in projects
-- Novel algorithms and methodologies
-- Practical applications and implementations
-- System architectures and frameworks
-- Performance optimization techniques
-- Innovative approaches to problem-solving
-- Tools and technologies for development
-- Research with clear implementation potential
+STRICT REQUIREMENTS - ALL must be met:
+1. Must be about CORE AI/ML (neural networks, deep learning, machine learning, AI systems)
+2. Must have CLEAR ALGORITHMS or METHODS that can be coded
+3. Must be IMPLEMENTABLE (not just theoretical or survey papers)
+4. Must be PRACTICAL for building real AI/ML systems
+5. Must NOT be domain-specific applications (medical, clinical, finance, etc.)
 
-EVALUATION CRITERIA:
-1. Does this paper contain implementable techniques or algorithms?
-2. Can the concepts be applied to build strong projects?
-3. Does it provide practical insights for development?
-4. Is it relevant to AI/ML project development?
-5. Does it offer innovative approaches worth exploring?
+IMMEDIATELY REJECT if paper contains:
+❌ Clinical/medical applications (patient data, healthcare, diagnosis)
+❌ Survey/review papers (just summarizing other work)
+❌ Purely theoretical work (mathematical proofs, complexity theory)
+❌ Non-AI domains (physics, chemistry, biology, economics)
+❌ Overly specific applications (radiation oncology, survey credibility, etc.)
+❌ Control theory, signal processing, or traditional engineering
+❌ Social sciences, psychology, or business applications
+
+ONLY ACCEPT if paper is about:
+✅ Core AI/ML architectures (transformers, CNNs, RNNs, GANs, VAEs)
+✅ AI/ML algorithms with clear implementation steps
+✅ AI systems and frameworks (RAG, agents, LLMs, computer vision)
+✅ AI/ML optimization and training techniques
+✅ Practical AI/ML tools and libraries
+✅ AI/ML performance improvements and innovations
 
 RESPONSE FORMAT:
-Simply respond with:
-RELEVANT or NOT RELEVANT
-Followed by a brief explanation of why.
+RELEVANT - Only if it's clearly implementable AI/ML with practical value
+NOT RELEVANT - For everything else (be very strict!)
 
-NO JSON NEEDED - Just plain text response."""
+Brief explanation focusing on implementation potential."""
 
         user_prompt = f"""Paper: {pdf_name}
 Chunk: {chunk_num}/{total_chunks}

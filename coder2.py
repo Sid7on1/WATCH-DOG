@@ -348,9 +348,94 @@ class CodingAgent:
                 })
                 break
     
+    def generate_comprehensive_readme(self, file_info, project_info, max_retries=2):
+        """Generate comprehensive README.md file (not just one paragraph!)"""
+        system_prompt = f"""Create a COMPREHENSIVE, PROFESSIONAL README.md file.
+
+PROJECT: {project_info['project_name']}
+TYPE: {project_info['project_type']}
+DESCRIPTION: {project_info['description']}
+
+REQUIREMENTS:
+- MINIMUM 200 lines of content
+- Multiple detailed sections
+- Code examples with syntax highlighting
+- Installation instructions
+- Usage examples
+- Architecture overview
+- Feature list
+- Configuration details
+- NOT just a single paragraph!
+
+MANDATORY SECTIONS:
+1. # Project Title
+2. ## Overview (detailed explanation)
+3. ## Features (comprehensive list)
+4. ## Installation (step-by-step)
+5. ## Usage (with code examples)
+6. ## Architecture
+7. ## Configuration
+8. ## Examples
+9. ## Contributing
+10. ## License"""
+
+        user_prompt = f"Create comprehensive README.md for {project_info['project_name']} - an AI/ML project implementing {project_info['description']}"
+
+        try:
+            readme_content = self.make_api_request(system_prompt, user_prompt, 4000)
+            if "```markdown" in readme_content:
+                readme_content = readme_content.split("```markdown")[1].split("```")[0]
+            return readme_content.strip()
+        except:
+            return f"""# {project_info['project_name']}
+
+## Overview
+
+{project_info['description']}
+
+This is a comprehensive AI/ML project implementing advanced algorithms for {project_info['project_type']} applications.
+
+## Features
+
+- Advanced {project_info['project_type']} implementation
+- Production-ready code architecture
+- Comprehensive error handling and logging
+- Modular design for easy extension
+- Full documentation and examples
+
+## Installation
+
+```bash
+git clone <repository-url>
+cd {project_info['project_name']}
+pip install -r requirements.txt
+```
+
+## Usage
+
+```python
+from main import MainClass
+system = MainClass()
+result = system.run()
+```
+
+## Architecture
+
+The project follows a modular architecture with clear separation of concerns.
+
+## License
+
+MIT License
+"""
+    
     def generate_code(self, file_info, project_info, max_retries=2):
         """Generate code for a specific file using Qwen Coder"""
         filename = file_info.get('filename', file_info.get('name', 'unknown_file'))
+        
+        # Special handling for README files - generate comprehensive documentation
+        if filename.lower() in ['readme.md', 'readme']:
+            return self.generate_comprehensive_readme(file_info, project_info, max_retries)
+        
         purpose = file_info['purpose']
         dependencies = file_info.get('dependencies', [])
         key_functions = file_info.get('key_functions', [])
