@@ -3,22 +3,22 @@ name: WATCHDOG Complete System
 on:
   schedule:
     # Run daily at 2:00 AM UTC (hybrid auto-alternating mode)
-    - cron: '0 2 * * *'
+    - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
       mode:
-        description: 'System mode to run'
+        description: "System mode to run"
         required: true
-        default: 'hybrid'
+        default: "hybrid"
         type: choice
         options:
-          - 'hybrid'
-          - 'original'
-          - 'enhanced'
+          - "hybrid"
+          - "original"
+          - "enhanced"
       papers_per_domain:
-        description: 'Number of papers per domain'
+        description: "Number of papers per domain"
         required: false
-        default: ''
+        default: ""
         type: string
 
 env:
@@ -28,223 +28,223 @@ env:
   groq_API: ${{ secrets.GROQ_API }}
   cohere_API: ${{ secrets.COHERE_API }}
   GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-  
+
   # GitHub Integration
   GITHUB_PAT: ${{ secrets.GITHUB_PAT }}
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   API_GITHUB: ${{ secrets.API_GITHUB }}
   GITHUB_USER: ${{ github.repository_owner }}
-  GITHUB_REPO: 'WATCHDOG_memory'
-  
+  GITHUB_REPO: "WATCHDOG_memory"
+
   # System Configuration
-  SELECTOR_MIN_SCORE: '3.0'
-  WATCHDOG_FINALIZE: '1'
-  PYTHONUNBUFFERED: '1'
+  SELECTOR_MIN_SCORE: "3.0"
+  WATCHDOG_FINALIZE: "1"
+  PYTHONUNBUFFERED: "1"
 
 jobs:
   watchdog-system:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours timeout
-    
+    timeout-minutes: 360 # 6 hours timeout
+
     steps:
-    - name: 🚀 Checkout Repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 1
-    
-    - name: 🐍 Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-        cache: 'pip'
-    
-    - name: 📦 Install Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        echo "✅ Dependencies installed"
-    
-    - name: 🔍 Determine Execution Mode
-      id: mode
-      run: |
-        if [ "${{ github.event.inputs.mode }}" != "" ]; then
-          MODE="${{ github.event.inputs.mode }}"
-          echo "🔧 Manual mode selected: $MODE"
-        else
-          MODE="hybrid"
-          echo "🔄 Default mode: hybrid (auto-alternating)"
-        fi
-        echo "mode=$MODE" >> $GITHUB_OUTPUT
-        echo "EXECUTION_MODE=$MODE" >> $GITHUB_ENV
-    
-    - name: 🧹 Clean Previous Artifacts
-      run: |
-        if [ -d "artifacts" ]; then
-          echo "🧹 Cleaning previous artifacts..."
-          rm -rf artifacts
-          echo "✅ Previous artifacts cleaned"
-        else
-          echo "📁 No previous artifacts to clean"
-        fi
-    
-    - name: 🔄 Run Hybrid System (Auto-Alternating)
-      if: env.EXECUTION_MODE == 'hybrid'
-      run: |
-        echo "🔄 Running Hybrid WATCHDOG System (Auto-Alternating)"
-        echo "📅 Schedule: 1 day original → 2 days enhanced → repeat"
-        echo "⏰ Started at: $(date)"
-        
-        python hybrid_watchdog.py pipeline
-        
-        echo "✅ Hybrid system completed"
-        echo "⏰ Completed at: $(date)"
-    
-    - name: 📊 Run Original System (Broad Coverage)
-      if: env.EXECUTION_MODE == 'original'
-      run: |
-        echo "📊 Running Original WATCHDOG System (Broad arXiv Coverage)"
-        echo "🎯 Target: ${{ github.event.inputs.papers_per_domain || '2' }} papers per domain"
-        echo "⏰ Started at: $(date)"
-        
-        # Run original pipeline components
-        echo "📡 Step 1: Original arXiv Scraping"
-        python scraper.py
-        
-        echo "📄 Step 2: PDF Text Extraction"
-        python extractor.py
-        
-        echo "🎯 Step 3: Paper Selection"
-        python selector.py
-        
-        echo "📋 Step 4: Project Planning"
-        python planner.py
-        
-        echo "🤖 Step 5: Multi-Agent Implementation"
-        if [ -d "artifacts/structures" ]; then
-          for project_dir in artifacts/structures/*/; do
-            if [ -d "$project_dir" ]; then
-              project_name=$(basename "$project_dir")
-              echo "🔧 Implementing project: $project_name"
-              python manager.py "$project_name" || echo "⚠️ Project $project_name failed"
-            fi
-          done
-        else
-          echo "❌ No project structures found"
-        fi
-        
-        echo "✅ Original system completed"
-        echo "⏰ Completed at: $(date)"
-    
-    - name: 🚀 Run Enhanced System (AI/ML Specialized)
-      if: env.EXECUTION_MODE == 'enhanced'
-      run: |
-        echo "🚀 Running Enhanced WATCHDOG System (AI/ML Specialized)"
-        echo "🎯 Focus: RAG, NLP, Agents, MLOps, Computer Vision"
-        echo "📊 Target: ${{ github.event.inputs.papers_per_domain || '3' }} papers per domain"
-        echo "⏰ Started at: $(date)"
-        
-        python enhanced_watchdog.py pipeline ${{ github.event.inputs.papers_per_domain || '3' }}
-        
-        echo "✅ Enhanced system completed"
-        echo "⏰ Completed at: $(date)"
-    
-    - name: 📊 Generate Execution Summary
-      if: always()
-      run: |
-        echo "📊 Generating WATCHDOG Execution Summary..."
-        
-        # Create summary report
-        cat > execution_summary.md << EOF
-        # 🤖 WATCHDOG System Execution Summary
-        
-        **Execution Time:** $(date)
-        **Repository:** ${{ github.repository }}
-        **Mode:** ${{ env.EXECUTION_MODE }}
-        **Workflow Run:** ${{ github.run_id }}
-        
-        ## 📊 System Configuration
-        - **Mode**: ${{ env.EXECUTION_MODE }}
-        - **Papers per Domain**: ${{ github.event.inputs.papers_per_domain || 'default' }}
-        - **Trigger**: ${{ github.event_name }}
-        
-        ## 📁 Generated Artifacts
-        EOF
-        
-        if [ -d "artifacts" ]; then
-          echo "### Artifact Counts:" >> execution_summary.md
-          echo "- 📄 PDFs: $(find artifacts -name "*.pdf" 2>/dev/null | wc -l)" >> execution_summary.md
-          echo "- 📝 Text Chunks: $(find artifacts -name "*.txt" 2>/dev/null | wc -l)" >> execution_summary.md
-          echo "- ✅ Relevant Papers: $(find artifacts/relevant -type d -mindepth 1 2>/dev/null | wc -l)" >> execution_summary.md
-          echo "- 📋 Project Plans: $(find artifacts/structures -name "*.json" 2>/dev/null | wc -l)" >> execution_summary.md
-          echo "- 🚀 Generated Projects: $(find artifacts/projects -type d -mindepth 1 2>/dev/null | wc -l)" >> execution_summary.md
-          
-          echo "### Directory Structure:" >> execution_summary.md
-          echo '```' >> execution_summary.md
-          find artifacts -type f | head -20 >> execution_summary.md
-          if [ $(find artifacts -type f | wc -l) -gt 20 ]; then
-            echo "... and $(( $(find artifacts -type f | wc -l) - 20 )) more files" >> execution_summary.md
+      - name: 🚀 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 📦 Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          echo "✅ Dependencies installed"
+
+      - name: 🔍 Determine Execution Mode
+        id: mode
+        run: |
+          if [ "${{ github.event.inputs.mode }}" != "" ]; then
+            MODE="${{ github.event.inputs.mode }}"
+            echo "🔧 Manual mode selected: $MODE"
+          else
+            MODE="hybrid"
+            echo "🔄 Default mode: hybrid (auto-alternating)"
           fi
-          echo '```' >> execution_summary.md
-        else
-          echo "❌ No artifacts directory found" >> execution_summary.md
-        fi
-        
-        # Add mode-specific information
-        if [ "${{ env.EXECUTION_MODE }}" = "hybrid" ]; then
-          echo "## 🔄 Hybrid Mode Information" >> execution_summary.md
-          if [ -f "hybrid_mode_config.json" ]; then
-            echo '```json' >> execution_summary.md
-            cat hybrid_mode_config.json >> execution_summary.md
+          echo "mode=$MODE" >> $GITHUB_OUTPUT
+          echo "EXECUTION_MODE=$MODE" >> $GITHUB_ENV
+
+      - name: 🧹 Clean Previous Artifacts
+        run: |
+          if [ -d "artifacts" ]; then
+            echo "🧹 Cleaning previous artifacts..."
+            rm -rf artifacts
+            echo "✅ Previous artifacts cleaned"
+          else
+            echo "📁 No previous artifacts to clean"
+          fi
+
+      - name: 🔄 Run Hybrid System (Auto-Alternating)
+        if: env.EXECUTION_MODE == 'hybrid'
+        run: |
+          echo "🔄 Running Hybrid WATCHDOG System (Auto-Alternating)"
+          echo "📅 Schedule: 1 day original → 2 days enhanced → repeat"
+          echo "⏰ Started at: $(date)"
+
+          python hybrid_watchdog.py pipeline
+
+          echo "✅ Hybrid system completed"
+          echo "⏰ Completed at: $(date)"
+
+      - name: 📊 Run Original System (Broad Coverage)
+        if: env.EXECUTION_MODE == 'original'
+        run: |
+          echo "📊 Running Original WATCHDOG System (Broad arXiv Coverage)"
+          echo "🎯 Target: ${{ github.event.inputs.papers_per_domain || '2' }} papers per domain"
+          echo "⏰ Started at: $(date)"
+
+          # Run original pipeline components
+          echo "📡 Step 1: Original arXiv Scraping"
+          python scraper.py
+
+          echo "📄 Step 2: PDF Text Extraction"
+          python extractor.py
+
+          echo "🎯 Step 3: Paper Selection"
+          python selector.py
+
+          echo "📋 Step 4: Project Planning"
+          python planner.py
+
+          echo "🤖 Step 5: Multi-Agent Implementation"
+          if [ -d "artifacts/structures" ]; then
+            for project_dir in artifacts/structures/*/; do
+              if [ -d "$project_dir" ]; then
+                project_name=$(basename "$project_dir")
+                echo "🔧 Implementing project: $project_name"
+                python manager.py "$project_name" || echo "⚠️ Project $project_name failed"
+              fi
+            done
+          else
+            echo "❌ No project structures found"
+          fi
+
+          echo "✅ Original system completed"
+          echo "⏰ Completed at: $(date)"
+
+      - name: 🚀 Run Enhanced System (AI/ML Specialized)
+        if: env.EXECUTION_MODE == 'enhanced'
+        run: |
+          echo "🚀 Running Enhanced WATCHDOG System (AI/ML Specialized)"
+          echo "🎯 Focus: RAG, NLP, Agents, MLOps, Computer Vision"
+          echo "📊 Target: ${{ github.event.inputs.papers_per_domain || '3' }} papers per domain"
+          echo "⏰ Started at: $(date)"
+
+          python enhanced_watchdog.py pipeline ${{ github.event.inputs.papers_per_domain || '3' }}
+
+          echo "✅ Enhanced system completed"
+          echo "⏰ Completed at: $(date)"
+
+      - name: 📊 Generate Execution Summary
+        if: always()
+        run: |
+          echo "📊 Generating WATCHDOG Execution Summary..."
+
+          # Create summary report
+          cat > execution_summary.md << EOF
+          # 🤖 WATCHDOG System Execution Summary
+
+          **Execution Time:** $(date)
+          **Repository:** ${{ github.repository }}
+          **Mode:** ${{ env.EXECUTION_MODE }}
+          **Workflow Run:** ${{ github.run_id }}
+
+          ## 📊 System Configuration
+          - **Mode**: ${{ env.EXECUTION_MODE }}
+          - **Papers per Domain**: ${{ github.event.inputs.papers_per_domain || 'default' }}
+          - **Trigger**: ${{ github.event_name }}
+
+          ## 📁 Generated Artifacts
+          EOF
+
+          if [ -d "artifacts" ]; then
+            echo "### Artifact Counts:" >> execution_summary.md
+            echo "- 📄 PDFs: $(find artifacts -name "*.pdf" 2>/dev/null | wc -l)" >> execution_summary.md
+            echo "- 📝 Text Chunks: $(find artifacts -name "*.txt" 2>/dev/null | wc -l)" >> execution_summary.md
+            echo "- ✅ Relevant Papers: $(find artifacts/relevant -type d -mindepth 1 2>/dev/null | wc -l)" >> execution_summary.md
+            echo "- 📋 Project Plans: $(find artifacts/structures -name "*.json" 2>/dev/null | wc -l)" >> execution_summary.md
+            echo "- 🚀 Generated Projects: $(find artifacts/projects -type d -mindepth 1 2>/dev/null | wc -l)" >> execution_summary.md
+            
+            echo "### Directory Structure:" >> execution_summary.md
             echo '```' >> execution_summary.md
+            find artifacts -type f | head -20 >> execution_summary.md
+            if [ $(find artifacts -type f | wc -l) -gt 20 ]; then
+              echo "... and $(( $(find artifacts -type f | wc -l) - 20 )) more files" >> execution_summary.md
+            fi
+            echo '```' >> execution_summary.md
+          else
+            echo "❌ No artifacts directory found" >> execution_summary.md
           fi
-        fi
-        
-        echo "📊 Summary report generated"
-    
-    - name: 📤 Upload Artifacts
-      if: always()
-      uses: actions/upload-artifact@v3
-      with:
-        name: watchdog-artifacts-${{ env.EXECUTION_MODE }}-${{ github.run_id }}
-        path: |
-          artifacts/
-          execution_summary.md
-          hybrid_mode_config.json
-        retention-days: 30
-    
-    - name: 💾 Finalize and Backup
-      if: success()
-      run: |
-        echo "💾 Finalizing WATCHDOG execution..."
-        echo "✅ All artifacts and projects automatically synced to WATCHDOG_memory repository"
-        echo "🚀 Individual project repositories created and populated"
-        echo "📊 Execution completed successfully"
-    
-    - name: 🔔 Handle Failure
-      if: failure()
-      run: |
-        echo "❌ WATCHDOG execution failed"
-        echo "🔍 Check the logs above for error details"
-        echo "📊 Partial results may still be available in artifacts"
-        
-        # Create failure report
-        echo "# ❌ WATCHDOG Failure Report" > failure_report.md
-        echo "**Time:** $(date)" >> failure_report.md
-        echo "**Mode:** ${{ env.EXECUTION_MODE }}" >> failure_report.md
-        echo "**Repository:** ${{ github.repository }}" >> failure_report.md
-        echo "**Run ID:** ${{ github.run_id }}" >> failure_report.md
-    
-    - name: 📊 Final Status
-      if: always()
-      run: |
-        echo "📊 Final WATCHDOG Status:"
-        echo "⏰ Execution completed at: $(date)"
-        echo "🔄 Mode executed: ${{ env.EXECUTION_MODE }}"
-        echo "📁 Artifacts:"
-        if [ -d "artifacts" ]; then
-          du -sh artifacts/ 2>/dev/null || echo "Could not calculate size"
-          echo "📊 Total files: $(find artifacts -type f 2>/dev/null | wc -l)"
-        else
-          echo "No artifacts directory"
-        fi
-        echo "✅ WATCHDOG execution summary complete"
+
+          # Add mode-specific information
+          if [ "${{ env.EXECUTION_MODE }}" = "hybrid" ]; then
+            echo "## 🔄 Hybrid Mode Information" >> execution_summary.md
+            if [ -f "hybrid_mode_config.json" ]; then
+              echo '```json' >> execution_summary.md
+              cat hybrid_mode_config.json >> execution_summary.md
+              echo '```' >> execution_summary.md
+            fi
+          fi
+
+          echo "📊 Summary report generated"
+
+      - name: 📤 Upload Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: watchdog-artifacts-${{ env.EXECUTION_MODE }}-${{ github.run_id }}
+          path: |
+            artifacts/
+            execution_summary.md
+            hybrid_mode_config.json
+          retention-days: 30
+
+      - name: 💾 Finalize and Backup
+        if: success()
+        run: |
+          echo "💾 Finalizing WATCHDOG execution..."
+          echo "✅ All artifacts and projects automatically synced to WATCHDOG_memory repository"
+          echo "🚀 Individual project repositories created and populated"
+          echo "📊 Execution completed successfully"
+
+      - name: 🔔 Handle Failure
+        if: failure()
+        run: |
+          echo "❌ WATCHDOG execution failed"
+          echo "🔍 Check the logs above for error details"
+          echo "📊 Partial results may still be available in artifacts"
+
+          # Create failure report
+          echo "# ❌ WATCHDOG Failure Report" > failure_report.md
+          echo "**Time:** $(date)" >> failure_report.md
+          echo "**Mode:** ${{ env.EXECUTION_MODE }}" >> failure_report.md
+          echo "**Repository:** ${{ github.repository }}" >> failure_report.md
+          echo "**Run ID:** ${{ github.run_id }}" >> failure_report.md
+
+      - name: 📊 Final Status
+        if: always()
+        run: |
+          echo "📊 Final WATCHDOG Status:"
+          echo "⏰ Execution completed at: $(date)"
+          echo "🔄 Mode executed: ${{ env.EXECUTION_MODE }}"
+          echo "📁 Artifacts:"
+          if [ -d "artifacts" ]; then
+            du -sh artifacts/ 2>/dev/null || echo "Could not calculate size"
+            echo "📊 Total files: $(find artifacts -type f 2>/dev/null | wc -l)"
+          else
+            echo "No artifacts directory"
+          fi
+          echo "✅ WATCHDOG execution summary complete"
